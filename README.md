@@ -322,9 +322,15 @@ The wrapped view is 140 times slower and holds a gigabyte of proxies. Vue wraps 
 
 A marked field costs 13.5 nanoseconds a read in the benchmark, against 0.9 for a plain field: fifteen times, and still nothing a screen can feel. The measurements and how to run them are in RESEARCH.md.
 
-The same benches, run again where this branch was built (Node 22.22, Vue 3.5.44, jsdom):
+The same benches again, where this branch was built: Node 22.22.0, Vue 3.5.44, jsdom, a sequential run, the median of ten redraws.
 
-<!-- branch run: numbers pending -->
+| Template | | Mount | One redraw | Memory after mount | A write into the layout redraws? |
+|---|---|---|---|---|---|
+| walks the layout | Tacet | 16 ms | 2.1 ms | +0 MB | no |
+| walks the layout | `reactive(view)` | 1,736 ms | 1,130 ms | +446 MB | yes |
+| reads the count | both | under 5 ms | under 0.2 ms | +0 MB | no |
+
+A read costs 0.7 to 3.3 nanoseconds on a plain field, 9.1 to 9.5 on a `@live` field, 9.0 to 9.1 through the comment tag, the same getter. Making one instance costs 0.01 microseconds plain, 0.53 to 0.71 with `@live`, 0.53 to 0.59 with the tag; a Vue `shallowRef` alone is 0.03. This box walks the plain path faster than the one above and shows the same shape: the wrapped view is five hundred times slower here, 140 times there.
 
 The benches are in `bench/` and run with `npm run bench`.
 
@@ -340,9 +346,9 @@ npm run build:lib  # the library to dist/, with its types
 npm run bench    # the redraw cost and the price of a mark
 ```
 
-`typescript` is a dependency because the check needs it. Only `tacet/vite` pulls it; the entry `tacet` does not.
+`typescript` is a dependency because the check and the tag parser need it. Only `tacet/vite` pulls it; the entry `tacet` imports nothing of it.
 
-The marks in a plain `.js` file are the comment tags. A user who wants decorators in `.js` files sets esbuild in the Vite config: `esbuild: {include: /\.(m?[jt]sx?)$/, exclude: [], target: "es2022"}`.
+Decorators in a plain `.js` file need esbuild to read it: add `esbuild: {include: /\.[jt]sx?$/, exclude: /node_modules/, target: "es2022"}` to the Vite config. The comment tag `/** @live */` needs nothing.
 
 The library is `src/`: `tacet.ts` the marks, `runtime.ts` what the build inserts, `tags.ts` the comment tags, `files.ts` the `.tacet` files, `check.ts` the check, `vite.ts` the plugin.
 

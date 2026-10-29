@@ -14,10 +14,10 @@ The repo now holds the implementation; the prototype below is gone with its scra
 |---|---|---|---|---|---|
 | reads the count | Tacet | 4.5 ms | 0.17 ms | +0 MB | no |
 | reads the count | reactive(view) | 1.3 ms | 0.05 ms | +0 MB | no |
-| walks the layout | Tacet | 19 ms | 1.9 to 2.2 ms | +0 MB | no |
-| walks the layout | reactive(view) | 1,280 to 1,330 ms | 1,060 to 1,170 ms | +446 MB | yes |
+| walks the layout | Tacet | 16 ms | 2.1 ms | +0 MB | no |
+| walks the layout | reactive(view) | 1,736 ms | 1,130 ms | +446 MB | yes |
 
-Faster than the prototype's machine on both arms, and the gap wider: five hundred times. The wrapped arm needs about 5 GB of heap at a million slots, more than Node's default; `npm run bench` sets 12 GB. The count-only arms are the same story as before: nothing is walked, nothing costs.
+The "walks the layout" rows are a sequential run, nothing else on the box; the earlier lines in this table came from runs with other work on it. Faster than the prototype's machine on both arms, and the gap wider: five hundred times. The wrapped arm needs about 5 GB of heap at a million slots, more than Node's default; `npm run bench` sets 12 GB. The count-only arms are the same story as before: nothing is walked, nothing costs.
 
 **The price of a mark** (`bench/read.ts`, 20 million reads, 200,000 instances):
 
@@ -25,11 +25,13 @@ Faster than the prototype's machine on both arms, and the gap wider: five hundre
 |---|---|---|
 | plain field | 1 to 3 ns (noisy) | 0.01 µs |
 | `@live` decorator (getter on the instance) | 9 ns | 0.5 to 0.8 µs |
-| `/** @live */` tag (the same getter) | 9 ns | 0.5 µs |
-| `@live accessor` (getter on the prototype) | 16 ns | 0.35 µs |
+| `/** @live */` tag (the same getter) | 9.0 to 9.1 ns | 0.53 to 0.59 µs |
+| `@live accessor` (getter on the prototype; removed since, Open 11) | 16 ns | 0.35 µs |
 | a Vue `shallowRef` alone | | 0.02 µs |
 
 So the ref is not the cost of an instance; `Object.defineProperty` on the instance is, and esbuild's decorator helpers add a little on top of the tag. The `accessor` form saves less than hoped here (0.35 µs against 0.5), reads a little slower through the two-step getter, and is not seen by `JSON.stringify` or `Object.keys`. It was removed from the runtime pending the owner's decision (DECISIONS.md, Open 11); the field form is what ships.
+
+**A `@deep` array of a million rows** (`bench/`): `find` of the first row wraps one item, 121 ms to make and assign the million rows and 0.07 ms for the find; `find` of the last row wraps all million in 2.4 s, about 2.4 µs a wrap.
 
 **Vue 3.6.0-rc.13.** The whole suite, 40 tests, passes unchanged with the rc installed in a copy outside the repo, not kept, the new `@deep` proxy over `shallowReactive` included. A `.tacet` file with `<script setup lang="ts" vapor>` mounted through `createVaporApp` reads the view, follows its marks and hands the element to the field; in the rc, Vapor is only in the `vue.runtime-with-vapor` browser bundle, so that test aliases `vue` to it, and under that alias the two `@vue/test-utils` mounts of the suite fail with a second copy of Vue (not Tacet's doing).
 
