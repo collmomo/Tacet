@@ -52,7 +52,7 @@ Tacet is written for TypeScript and works in plain JavaScript. In JavaScript the
 - **events**: the screen's events, held by the view and handled apart from its state: a key, a click, a change, each turned into a call on the view or its manager. A `TodoEvents`, reached as `view.events`.
 - **components**: the one-file pages and pieces, `.tacet` files. Template, script, style together. The script is the imports and the view, nothing else.
 
-A view can hold another view, an entity or a manager, and read its marked fields through it. Where shared state lives is your design: a third view, composition, inheritance. The framework stays out of it.
+This shape is a convention, not a rule of the framework. Tacet knows only the marks and the template: an events class is one way to keep every handler in one place, and a template may just as well call the view directly. A view can hold another view, an entity or a manager, and read its marked fields through it. Where shared state lives is your design: a third view, composition, inheritance. The framework stays out of it.
 
 ## The rules
 
@@ -75,7 +75,7 @@ export class Todo {
     @live public text: string;
     @live public isDone = false;
 
-    constructor(text: string, id = crypto.randomUUID()) {
+    constructor(text: string, id: string = crypto.randomUUID()) {
         this.id = id;
         this.text = text;
     }
@@ -194,7 +194,7 @@ export class TodoEvents {
 }
 ```
 
-**The component** (`components/Todos.tacet`, the same three blocks a `.vue` file has, compiled by the borrowed compiler):
+**The component** (`components/Todos.tacet`, the same three blocks a `.vue` file has, compiled by the borrowed compiler; the script is a `<script setup>`, so the template sees its names):
 
 ```html
 <template>
@@ -209,12 +209,12 @@ export class TodoEvents {
   <button v-for="f in filters" :key="f" :class="{picked: view.filter === f}" @click="view.events.handleFilter(f)">{{ f }}</button>
 </template>
 
-<script lang="ts">
+<script setup lang="ts">
   import {TodoView, type TodoFilter} from "../views/TodoView";
   import {TodoManager} from "../managers/TodoManager";
 
   const view = new TodoView(new TodoManager());
-  const filters: TodoFilter[] = ["all", "open", "done"];
+  const filters: readonly TodoFilter[] = ["all", "open", "done"];
 </script>
 
 <style>
@@ -226,8 +226,22 @@ export class TodoEvents {
 **Starting it** (`main.ts`):
 
 ```ts
+import {createApp} from "vue";
+import Todos from "./components/Todos.tacet";
+
 createApp(Todos).mount("#app");
 ```
+
+**The build** (`vite.config.ts`). One plugin: the marks, the `.tacet` files and the check.
+
+```ts
+import {defineConfig} from "vite";
+import {tacet} from "tacet/vite";
+
+export default defineConfig({plugins: tacet()});
+```
+
+The `filters` list is typed `readonly` because the template walks it: the check below asks that whatever a screen reads can be followed, and a `readonly` array cannot change under it.
 
 The root component makes its own objects. A child gets its view as a prop, or reaches it through the object its parent gave it. Tacet never holds a view and never asks you to register one.
 
@@ -255,6 +269,31 @@ export class TodoView {
 ```
 
 What is not there: `ref()`, computed, watch, stores, emits, a base class, a call to make things live, a place to register views. The template reads the view and calls its events. The view is a class you can use from a test, from a script, or from anything else.
+
+## The check
+
+The build reads every `@live` getter and every `.tacet` template and follows each read hop by hop through the types. What it accepts is in the four rules above. What it refuses, it names, with the fix:
+
+```
+views/TodoView.ts:21:16 error: "this.manager.count": "count" is a plain field of TodoManager that can change,
+and the getter would not follow it. Mark it @live or @deep, or make it readonly.
+```
+
+A `vite build` with an error fails. In `vite dev` the error is logged on every change. A marked field no template reads is a hint, not an error. The templates are checked against the same marks, and a template that writes a field (`v-model`, `view.x = 1` in a handler) is refused: a change goes through a method.
+
+The check reads the project's `tsconfig.json`, so what it covers is what the tsconfig includes. Type-checking the templates themselves is `vue-tsc`, with one tsconfig line, `"vueCompilerOptions": {"extensions": [".vue", ".tacet"]}`, and the editor needs one setting, `"files.associations": {"*.tacet": "vue"}`.
+
+## One property of a library's object
+
+A library object that changes itself with no callback, a player's time, a socket's state, has nothing to mark. `as live` on one property read, inside a `@live` getter, follows that one property on that one object:
+
+```ts
+@live public get time(): number {
+    return this.player.currentTime as live;
+}
+```
+
+At the first read Tacet puts a getter and a setter on that property of that instance. It must be a plain, writable property of the object's own: a getter of the library's, or a frozen object, is an error naming the property at the first read, never a stale value. The build rewrites the cast; the editor sees a type.
 
 ## An element of the DOM
 
@@ -296,6 +335,18 @@ One view holding a plain array of 1,000,000 slot objects in an unmarked field, a
 The wrapped view is 140 times slower and holds a gigabyte of proxies. Vue wraps lazily, so the cost is not the wrapping: it is the first reader that walks the layout through the wrapper, and every redraw after it. Tacet walks nothing it was not told to. A template that reads only a counter costs the same either way, under a millisecond.
 
 A marked field costs 13.5 nanoseconds a read in the benchmark, against 0.9 for a plain field: fifteen times, and still nothing a screen can feel. The measurements and how to run them are in RESEARCH.md.
+
+## Running it
+
+```
+npm install
+npm run dev      # the todo app, from example/
+npm test         # the runtime, the tags, the .tacet files, the check, the app: no browser
+npm run check    # vue-tsc over everything, templates included
+npm run build    # the app, with the check
+```
+
+The library is `src/`: `tacet.ts` is the runtime (the marks, the getter, `as live`, the element), `tags.ts` the comment tags, `files.ts` the `.tacet` files, `check.ts` the check, `vite.ts` the plugin that ties them together.
 
 ## Why it is useful
 

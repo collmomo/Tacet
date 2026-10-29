@@ -1,0 +1,24 @@
+<template>
+  <input :value="view.draft" @input="view.events.handleInput($event)" @keydown.enter="view.events.handleEnter()" placeholder="What needs doing?">
+  <ul>
+    <li v-for="todo in view.shownTodos" :key="todo.id" :class="{done: todo.isDone}">
+      <input type="checkbox" :checked="todo.isDone" @change="view.events.handleToggle(todo.id)">
+      {{ todo.text }}
+      <button @click="view.events.handleRemove(todo.id)">×</button>
+    </li>
+  </ul>
+  <button v-for="f in filters" :key="f" :class="{picked: view.filter === f}" @click="view.events.handleFilter(f)">{{ f }}</button>
+</template>
+
+<script setup lang="ts">
+  import {TodoView, type TodoFilter} from "../views/TodoView";
+  import {TodoManager} from "../managers/TodoManager";
+
+  const view = new TodoView(new TodoManager());
+  const filters: readonly TodoFilter[] = ["all", "open", "done"];
+</script>
+
+<style>
+  .done { text-decoration: line-through; }
+  .picked { font-weight: bold; }
+</style>

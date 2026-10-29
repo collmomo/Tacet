@@ -1,0 +1,39 @@
+{
+  "name": "tacet",
+  "version": "0.1.0",
+  "description": "A way to build a screen with plain classes. Nothing moves unless you marked it.",
+  "type": "module",
+  "license": "MIT",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./vite": "./src/vite.ts"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "test": "vitest run",
+    "check": "vue-tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@vitejs/plugin-vue": "^6.0.0",
+    "vite": "^7.0.0",
+    "vue": "^3.5.0"
+  },
+  "dependencies": {
+    "magic-string": "^0.30.0",
+    "typescript": "^5.9.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "@vitejs/plugin-vue": "^6.0.0",
+    "@vue/compiler-core": "^3.5.44",
+    "@vue/test-utils": "^2.4.6",
+    "jsdom": "^27.0.0",
+    "vite": "^7.0.0",
+    "vitest": "^3.2.0",
+    "vue": "^3.5.0",
+    "vue-tsc": "^3.0.0"
+  }
+}

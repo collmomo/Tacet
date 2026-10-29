@@ -1,0 +1,22 @@
+<template>
+  <input :value="view.filter" @input="view.setFilter($event.target.value)">
+  <ul>
+    <li v-for="(todo, i) in view.shown" :key="todo.id" :class="{done: todo.isDone, first: i === 0}">
+      <input type="checkbox" :checked="todo.isDone" @change="view.manager.count()">
+      {{ todo.text }}
+    </li>
+  </ul>
+  <p v-if="view.filter === 'all'">{{ view.summary }}</p>
+  <p v-else-if="view.manager.count() > 0">some</p>
+  <p v-else>none</p>
+  <div ref="view.box" v-bind="attrs"></div>
+  <button v-for="f in filters" :key="f" @click="view.setFilter(f)">{{ f }}</button>
+  <template v-for="(width, index) in view.manager.layout.columns" :key="index">{{ width.width }}</template>
+</template>
+
+<script setup lang="ts">
+  import {GoodView, Manager, FILTERS} from "./Good";
+  defineProps<{view: GoodView}>();
+  const filters = FILTERS;
+  const attrs = {title: "x"} as const;
+</script>

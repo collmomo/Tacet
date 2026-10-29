@@ -1,0 +1,14 @@
+<template>
+  <div ref="view.box" class="box">{{ view.label }}</div>
+  <p v-if="view.shown" class="shown">shown</p>
+  <button @click="view.show()">show</button>
+</template>
+
+<script setup lang="ts">
+  import {BoxView} from "./BoxView";
+  defineProps<{view: BoxView}>();
+</script>
+
+<style>
+  .box { color: red; }
+</style>

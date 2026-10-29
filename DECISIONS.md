@@ -25,13 +25,26 @@
 
 - The template is checked like a getter: every `view.x` a template reads is compared with the marks by the build; a plain field that can change is a build error, a marked field no template reads a hint (the owner, 2026-10-30).
 
+## Implemented (2026-10-29, the first implementation; the owner's to confirm)
+
+- The runtime is a small library on Vue 3.5 (research path (a)): `shallowRef` behind a getter and a setter, `computed` for a `@live` getter, `markRaw` on the instance. `@deep` is Tacet's own thin proxy over Vue's `shallowReactive`, applied lazily to every plain object, array, Map and Set along the way and never to a class instance, so `@deep` stops at a class in fact and not only by rule (the prototype could not do this).
+- The marks are standard decorators, and the comment tag is the same mark rewritten by the Vite plugin: `#__tacetN = __tacet.installField(this, "name", "live")` right after the field, a static block for a getter. One runtime under both.
+- The check runs in `tacet()`: on `vite build` an error fails the build; in `vite dev` it is logged on every change. It reads the tsconfig; a `.tacet` template is turned into TypeScript statements after its script and checked with the same rules as a getter. A live getter's body says what it returns, so a template that walks its result is judged by that body.
+- A library object: anything declared in a `.d.ts` is a value (reads and calls into it are leaves). A project class is judged by its marks wherever it sits, a project interface's method is opaque. An array, Map or Set is followed under `@deep`, or when typed `readonly` (`ReadonlyArray`, `ReadonlyMap`): TypeScript's readonly types say exactly "replaced, never mutated". A module `const` object is fixed; its properties need `as const` or `readonly`.
+- `as live` (open item 1): done. The tag plugin rewrites `x.y as live` into `__tacet.watch(x, "y")`; the runtime installs an accessor on that one property at the first read and refuses a non-writable one; the check treats the read as followed. `live` is also exported as a type (`any`) so the cast type-checks.
+- `<script setup>` (open item 4): the build adds `setup` to a bare `<script>` in a `.tacet` file, but `vue-tsc` and the editor read the raw file and need it written, so the README writes `<script setup lang="ts">`.
+- Vue 3.5 (open item 5): 3.5.44. The Vapor copy was not rebuilt.
+- The tag plugin's parser (open item 6): TypeScript's, which the check needs anyway.
+- A mistyped tag (open item 7): the plugin warns on a doc-comment tag within two letters of `live` or `deep`.
+- The getter on each instance (open item 3): still on the instance for the decorator and the tag; the `accessor` keyword with `@live` gives the prototype form, for entities made by the thousand.
+- The hint: a marked field no template reads, directly or through a live getter or a method the template calls, is reported as a hint when the project has at least one `.tacet` file.
+
 ## Open
-1. **`as live` on an expression, to try in the prototype (the owner, 2026-10-30: it has value):** `this.player.currentTime as live` inside a `@live` getter watches that one property on that one object (Tacet installs an accessor on the instance at the first read). It is the only way to follow a library object that changes itself with no callback (a player's time, a socket's state, a model's property on its own timer); the value rule covers the rest. Costs: a plain data property only (a library getter or a frozen object = a runtime error naming the property at the first read, never stale); `as live` is a build transform dressed as a cast (one type declaration keeps the editor quiet).
+1. **`as live` on an expression, implemented as above; to try on a real player or socket.** The original note: `this.player.currentTime as live` inside a `@live` getter watches that one property on that one object (Tacet installs an accessor on the instance at the first read). It is the only way to follow a library object that changes itself with no callback (a player's time, a socket's state, a model's property on its own timer); the value rule covers the rest. Costs: a plain data property only (a library getter or a frozen object = a runtime error naming the property at the first read, never stale); `as live` is a build transform dressed as a cast (one type declaration keeps the editor quiet).
 
 2. **A class loaded with no build.** Tags: plain fields, the screen never updates, no error. Decorators: `SyntaxError`. Decide whether the silent case needs a check (for example, the mount warns when a view has no marked field).
-3. **The getter on each instance or on the prototype.** On each instance, making an object costs 1.1 µs per marked field, against 0.08 µs on the prototype. A few views do not care; entities made by the thousand do. The tag plugin can write the prototype form; a decorator needs the `accessor` keyword for it.
-4. **`<script>` or `<script setup>` in a `.tacet` file.** Vue gives the template a file's top-level names only from `<script setup>`. The README's `<script lang="ts">` needs `setup`, or the plugin adds it.
-5. **Vue 3.5 or 3.6.** 3.6 brings the new reactivity and Vapor, but is a release candidate (rc.13, 2026-10-23). The prototype runs on both.
-6. **The tag plugin's parser.** TypeScript (already installed with `vue-tsc`, 575 ms to load per build) or a lighter one (Babel's or oxc's parser).
-7. **A mistyped tag.** `/** @lvie */` is silently plain. Decide whether the plugin warns on an `@` tag on a field that is close to `live` or `deep`.
-8. **Devtools.** Not tried. Open a Tacet view in the Vue devtools in a browser before promising it works there.
+3. **The tag plugin writing the prototype getter** (0.08 µs an instance against 1.1 µs). The plugin owns its output, so it can; not done yet.
+4. **The `.tacet` script in a `.vue`-aware editor.** `"files.associations"` is in `.vscode/settings.json`; not tried in an editor here.
+5. **Vue 3.6.** The runtime uses six public functions and ran unchanged on 3.6 Vapor in the prototype; the new `@deep` proxy has not been tried there.
+6. **Devtools.** Not tried. Open a Tacet view in the Vue devtools in a browser before promising it works there.
+7. **The check's cost.** It builds a TypeScript program on each `vite dev` change (about a second here). A watch program would make it incremental.

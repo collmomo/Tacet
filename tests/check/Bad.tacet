@@ -1,0 +1,12 @@
+<template>
+  <p>{{ view.plain }}</p>
+  <input v-model="view.unread">
+  <button @click="view.plain = 2">write</button>
+  <button @click="view.plain++">bump</button>
+  <p v-for="row in view.rows" :key="row.n">{{ row.n }}</p>
+</template>
+
+<script setup lang="ts">
+  import {BadView} from "./Bad";
+  const view = new BadView(() => 1);
+</script>
