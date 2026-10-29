@@ -192,21 +192,13 @@ describe("the todo view with decorators", () => {
         }).toThrow(/never needs a mark/);
     });
 
-    it("the accessor keyword puts the getter on the prototype", () => {
-        class Counter {
-            @live accessor count = 0;
-            @deep accessor rows: {n: number}[] = [];
-        }
-        const counter = new Counter();
-        expect(Object.getOwnPropertyNames(counter).filter(name => !name.startsWith("__v_"))).toEqual([]);
-        const watcher = follow(() => counter.count + counter.rows.reduce((sum, row) => sum + row.n, 0));
-        counter.count = 1;
-        counter.count = 1;
-        expect(watcher.runs).toBe(2);
-        counter.rows.push({n: 2});
-        counter.rows[0].n = 3;
-        expect(watcher.runs).toBe(4);
-        expect(watcher.last).toBe(4);
-        expect(reactive(counter)).toBe(counter);
+    it("the accessor keyword takes no mark", () => {
+        expect(() => {
+            class Wrong {
+                // @ts-expect-error two marks, on a field or a getter
+                @live public accessor count = 0;
+            }
+            return new Wrong();
+        }).toThrow(/not an accessor \("count"\)/);
     });
 });

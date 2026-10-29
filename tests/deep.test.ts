@@ -1,6 +1,7 @@
 import {describe, expect, it} from "vitest";
 import {isReactive, toRaw} from "vue";
-import {deep, live, toDeep} from "../src";
+import {deep, live} from "../src";
+import {countWraps, wrapDeep} from "../src/runtime";
 import {follow} from "./helpers";
 
 class Sheet {
@@ -12,6 +13,14 @@ class Sheet {
 
 class Chart {
     public points = 0;
+}
+
+class Table {
+    @deep public rows: {id: number; name: string}[] = [];
+}
+
+function makeRows(count: number): {id: number; name: string}[] {
+    return Array.from({length: count}, (_, id) => ({id, name: `row ${id}`}));
 }
 
 describe("@deep", () => {
@@ -134,12 +143,46 @@ describe("@deep", () => {
         expect(watcher.runs).toBe(2);
     });
 
-    it("toDeep returns anything that is not plain data as it is", () => {
+    it("wrapDeep returns anything that is not plain data as it is", () => {
         const chart = new Chart();
-        expect(toDeep(chart)).toBe(chart);
-        expect(toDeep(3)).toBe(3);
-        expect(toDeep(null)).toBe(null);
+        expect(wrapDeep(chart)).toBe(chart);
+        expect(wrapDeep(3)).toBe(3);
+        expect(wrapDeep(null)).toBe(null);
         const date = new Date();
-        expect(toDeep(date)).toBe(date);
+        expect(wrapDeep(date)).toBe(date);
+    });
+
+    it("an array answers as an array", () => {
+        const sheet = new Sheet();
+        sheet.cells = [[{value: 1}]];
+        expect(sheet.cells.constructor).toBe(Array);
+        expect(Array.isArray(sheet.cells)).toBe(true);
+        expect(String(sheet.cells)).toBe(String([[{value: 1}]]));
+        expect(Object.prototype.toString.call(sheet.cells)).toBe("[object Array]");
+        expect(sheet.tags.constructor).toBe(Set);
+        expect(String(sheet.byName)).toBe("[object Map]");
+    });
+
+    it("find over a million rows wraps the one item the callback reached", () => {
+        const table = new Table();
+        table.rows = makeRows(1_000_000);
+        let wraps = countWraps();
+        expect(table.rows.find(row => row.id === 0)?.name).toBe("row 0");
+        expect(countWraps() - wraps).toBe(1);
+        const other = new Table();
+        other.rows = makeRows(1_000_000);
+        wraps = countWraps();
+        expect(other.rows.some(row => row.id === 0)).toBe(true);
+        expect(countWraps() - wraps).toBe(1);
+        const watcher = follow(() => table.rows.find(row => row.id === 0)?.name);
+        expect(watcher.last).toBe("row 0");
+        table.rows[0].name = "first";
+        expect(watcher.runs).toBe(2);
+        expect(watcher.last).toBe("first");
+        wraps = countWraps();
+        table.rows.unshift({id: -1, name: "front"});
+        expect(watcher.runs).toBe(3);
+        expect(watcher.last).toBe("first");
+        expect(countWraps() - wraps).toBe(1);
     });
 });

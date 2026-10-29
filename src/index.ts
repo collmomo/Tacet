@@ -1,1 +1,1 @@
-export {live, deep, installField, installGetter, setRef, toDeep, watch, type Mark} from "./tacet.js";
+export {live, deep} from "./tacet.js";

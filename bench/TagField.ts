@@ -1,3 +1,3 @@
 export class TagField {
-    /** @live */ n = 1;
+    /** @live */ public n = 1;
 }

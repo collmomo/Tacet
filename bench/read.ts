@@ -1,10 +1,4 @@
-/**
- * The price of a mark: one read, and making one instance, for a plain field,
- * a @live field (the getter put on the instance), and a @live accessor (the
- * getter on the prototype).
- *
- * Run: npm run bench   (or BENCH=1 npx vitest run bench/read.test.ts)
- */
+/** The price of a mark: one read and one instance for a plain field, a @live field and a tagged field; run with npm run bench. */
 import {shallowRef} from "vue";
 import {live} from "../src";
 import {TagField} from "./TagField";
@@ -14,7 +8,6 @@ const MAKES = 200_000;
 
 class Plain { public n = 1; }
 class Field { @live public n = 1; }
-class Accessor { @live accessor n = 1; }
 
 function reads(name: string, make: () => {n: number}): void {
     const instance = make();
@@ -40,7 +33,6 @@ export function run(): void {
         reads("plain field", () => new Plain());
         reads("@live field (getter on the instance)", () => new Field());
         reads("/** @live */ field (the tag, same getter)", () => new TagField());
-        reads("@live accessor (getter on the prototype)", () => new Accessor());
     }
 }
 
