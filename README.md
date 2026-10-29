@@ -198,7 +198,7 @@ What is not there: refs, computed, watch, stores, emits, a base class, a call to
 
 ## An element of the DOM
 
-When a view needs a DOM element, the template hands it over. Point `ref` at a field of the view: the element goes there when it is drawn, `null` when it is removed.
+When a view needs a DOM element, the template hands it over. Point `ref` at a field of the view: Tacet puts the element there when it is drawn and `null` when it is removed, and writes it only when it differs.
 
 ```html
 <div ref="view.box">
@@ -208,21 +208,9 @@ When a view needs a DOM element, the template hands it over. Point `ref` at a fi
 private box: HTMLDivElement | null = null;   // plain: never marked, never walked
 ```
 
-When something must happen the moment the element arrives, point `ref` at a method instead. The build sees a method and calls it with the element, `null` on removal.
+Something to do the moment the element is there belongs to the component's lifecycle hook, `onMounted(() => view.draw())`, with `view.box` already filled.
 
-```html
-<canvas ref="view.attachCanvas">
-```
-
-```ts
-public attachCanvas(el: HTMLCanvasElement | null): void {
-    if (el === this.canvas) return;
-    this.canvas = el;
-    if (el) this.draw();
-}
-```
-
-No variable in the script, no hook, nothing kept in the template. The element lives in a plain field of the view, which is the only place a DOM node should ever be.
+No variable in the script, no method for it, nothing kept in the template. The element lives in a plain field of the view, which is the only place a DOM node should ever be.
 
 ## What stays from Vue, and what goes
 
