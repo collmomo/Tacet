@@ -15,7 +15,7 @@
 - The marks are DECORATORS, `@live` and `@deep`, as the README shows them: the `.tacet` build compiles them (TypeScript 5's standard decorators, no flag) so nothing waits on the browsers. The comment tag `/** @live */` is the same mark spelled for plain JavaScript, one runtime under both (the owner, 2026-10-29).
 
 - `@live` tracks assignment, `@deep` tracks mutation: a push under `@live` tells no one; under `@deep` it does (the owner, 2026-10-30).
-- A `@live` getter may read only marked fields, checked by the build hop by hop through the types (`this.a.b.c`: a mark on each hop's class, or a plain object under a `@deep` field); a plain or unknowable hop is a BUILD ERROR naming the hop, never a stale value (the owner, 2026-10-30: "compilation problems seem like a good idea").
+- A `@live` getter may read only marked fields, checked by the build hop by hop through the types (`this.a.b.c`: a mark on each hop's class, or a plain object under a `@deep` field); a `readonly` hop is fixed and needs no mark; a plain or unknowable hop that can change is a BUILD ERROR naming the hop, never a stale value (the owner, 2026-10-30: "compilation problems seem like a good idea").
 - `@deep` stops at a class instance: it walks plain objects and arrays, never enters a class; a class's surface is its own marks only, so one mark never changes another field's behaviour (the owner, 2026-10-30).
 - A `@live` getter that reads an unmarked field keeping its old value "by design" is withdrawn: it is the build error above.
 

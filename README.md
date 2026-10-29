@@ -28,7 +28,7 @@ In one sentence: `@live` tracks assignment, `@deep` tracks mutation. `items.push
 
 Two rules keep the marks honest:
 
-- **A `@live` getter may read only what is marked.** The build checks every hop of every path it reads: `this.object.other.value` needs a mark on `object` here, on `other` in `object`'s class, on `value` in `other`'s class. A plain hop would leave the getter stale, so the build refuses with the hop's name. A path under a `@deep` field needs no marks on its plain objects. A hop the build cannot see through, typed `any` or `unknown`, is refused too.
+- **A `@live` getter may read only what is marked.** The build checks every hop of every path it reads: `this.object.other.value` needs a mark on `object` here, on `other` in `object`'s class, on `value` in `other`'s class. A plain hop would leave the getter stale, so the build refuses with the hop's name. Two kinds of hop need no mark: a `readonly` field, assigned once and never again, and the plain objects under a `@deep` field. A hop the build cannot see through, typed `any` or `unknown`, is refused too. A getter with no mark reads anything: the rule is the price of caching, not of reading.
 - **A class with no marks is a value.** A library's object, a Date, a range, a chart, has no surface to mark. Hold it in a marked field and replace it when it changes; the getter follows the field. Its own insides tell no one.
 - **`@deep` stops at a class.** It walks plain objects and arrays all the way down and never enters a class instance. A class always decides its own surface with its own marks, so marking one field of it never changes what its other fields do, wherever the object sits.
 
