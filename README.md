@@ -28,7 +28,7 @@ In one sentence: `@live` tracks assignment, `@deep` tracks mutation. `items.push
 
 Three rules keep the marks honest:
 
-- **A `@live` getter may read only what is marked.** The build checks every hop of every path it reads: `this.object.other.value` needs a mark on `object` here, on `other` in `object`'s class, on `value` in `other`'s class. A plain hop would leave the getter stale, so the build refuses with the hop's name. Two kinds of hop need no mark: a `readonly` field, assigned once and never again, and the plain objects under a `@deep` field. A hop the build cannot see through, typed `any` or `unknown`, is refused too. A getter with no mark reads anything: the rule is the price of caching, not of reading.
+- **A `@live` getter may read only what is marked, and only in its own body.** The build checks every hop of every path the getter reads: `this.object.other.value` needs a mark on `object` here, on `other` in `object`'s class, on `value` in `other`'s class. A plain hop would leave the getter stale, so the build refuses with the hop's name. Two kinds of hop need no mark: a `readonly` field, assigned once and never again, and the plain objects under a `@deep` field. A hop the build cannot see through, typed `any` or `unknown`, is refused too. The getter may read other `@live` getters and compute on what it already holds: `filter` with an arrow function written inside it, `trim`, `Math.round`. It may not reach a dependency through a call: `this.calculateTotal()`, `this.customer.calculatePrice()`, a function passed by name. The build refuses those with the call's name, because it follows the getter's body and never a call. A getter with no mark reads anything: the rule is the price of caching, not of reading.
 - **A class with no marks is a value.** A library's object, a Date, a range, a chart, has no surface to mark. Hold it in a marked field and replace it when it changes; the getter follows the field. Its own insides tell no one.
 - **`@deep` stops at a class.** It walks plain objects and arrays all the way down and never enters a class instance. A class always decides its own surface with its own marks, so marking one field of it never changes what its other fields do, wherever the object sits.
 
@@ -241,9 +241,9 @@ One view holding a plain array of 1,000,000 slot objects in an unmarked field, a
 | Tacet | 35 ms | +0 MB | no |
 | `reactive(view)` | 4,964 ms | +1,009 MB | yes |
 
-The wrapped view is 140 times slower and holds a gigabyte of proxies, because Vue walks everything it can reach. Tacet walks nothing it was not told to. A template that reads only a counter costs the same either way, under a millisecond.
+The wrapped view is 140 times slower and holds a gigabyte of proxies. Vue wraps lazily, so the cost is not the wrapping: it is the first reader that walks the layout through the wrapper, and every redraw after it. Tacet walks nothing it was not told to. A template that reads only a counter costs the same either way, under a millisecond.
 
-A mark itself costs nothing to read: 13.5 nanoseconds a read, the same as a plain field. The measurements and how to run them are in RESEARCH.md.
+A marked field costs 13.5 nanoseconds a read in the benchmark, against 0.9 for a plain field: fifteen times, and still nothing a screen can feel. The measurements and how to run them are in RESEARCH.md.
 
 ## Why it is useful
 
