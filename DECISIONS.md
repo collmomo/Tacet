@@ -23,6 +23,8 @@
 
 - A `@live` getter's reads are checked through every call the build can resolve to a body it can see (the class's own methods, the module's functions, an arrow function inside it); a call it cannot see through (a method on an interface, a function passed by reference, a library's method on an object that can change) is a build error naming the call. The marked reads are tracked at run time wherever they happen; the build hunts only the plain ones (the owner, 2026-10-30: refusing `this.calculateTotal()` would force the body into the getter).
 
+- The template is checked like a getter: every `view.x` a template reads is compared with the marks by the build; a plain field that can change is a build error, a marked field no template reads a hint (the owner, 2026-10-30).
+
 ## Open
 1. **`as live` on an expression, to try in the prototype (the owner, 2026-10-30: it has value):** `this.player.currentTime as live` inside a `@live` getter watches that one property on that one object (Tacet installs an accessor on the instance at the first read). It is the only way to follow a library object that changes itself with no callback (a player's time, a socket's state, a model's property on its own timer); the value rule covers the rest. Costs: a plain data property only (a library getter or a frozen object = a runtime error naming the property at the first read, never stale); `as live` is a build transform dressed as a cast (one type declaration keeps the editor quiet).
 

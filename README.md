@@ -26,13 +26,14 @@ No mark: plain. The framework never touches it.
 
 In one sentence: `@live` tracks assignment, `@deep` tracks mutation. `items.push(x)` under `@live` tells no one; `items = [...items, x]` does. Under `@deep`, the push is enough.
 
-Three rules keep the marks honest:
+Four rules keep the marks honest:
 
 - **A `@live` getter may read only what can be followed.** Its result is kept until something it read changes, so the build checks what it reads:
   - A field that can change needs a mark. A `readonly` field or a plain object under `@deep` needs none.
   - A call to this class's methods or the module's functions is followed and checked the same way.
   - A plain field that can change, or a call the build cannot see through, is a build error naming it. Never a stale value.
   - A getter with no mark reads anything. It can only be slower, never wrong.
+- **The template is checked the same way.** The build reads every `view.x` a template uses and compares it with the marks. A plain field that can change, read by a template, is a build error: the screen would show it once and never follow it. A marked field no template reads gets a hint. The promise holds from both ends.
 - **A class with no marks is a value.** A library's object, a Date, a range, a chart, has no surface to mark. Hold it in a marked field and replace it when it changes; the getter follows the field. Its own insides tell no one.
 - **`@deep` stops at a class.** It walks plain objects and arrays all the way down and never enters a class instance. A class always decides its own surface with its own marks, so marking one field of it never changes what its other fields do, wherever the object sits.
 
