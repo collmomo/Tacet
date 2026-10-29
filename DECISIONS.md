@@ -22,11 +22,12 @@
 - A class with no marks at all (a library's: a Date, a DateRange, a chart) is a VALUE: it is held in a marked field and replaced when it changes; a path into it ends at that field (a leaf for the getter check); its own mutations tell no one. A library's plain containers (Map, Set, array) under `@deep` are tracked like plain data. A library object that changes itself (a socket, a chart instance) lives in a plain field and the view copies what the screen needs into marked fields when it calls back (the owner, 2026-10-30).
 
 ## Open
+1. **`as live` on an expression, the owner's idea (2026-10-30), to try in the prototype:** `this.library.rate as live` inside a `@live` getter watches that one property on that one object (Tacet installs an accessor on the instance at the first read), for a library object kept as a single instance. Costs: a plain data property only (a library getter or a frozen object = a runtime error naming the property at the first read, never stale); `as live` is a build transform dressed as a cast (one type declaration keeps the editor quiet); one more thing to explain. The value rule stays the default.
 
-1. **A class loaded with no build.** Tags: plain fields, the screen never updates, no error. Decorators: `SyntaxError`. Decide whether the silent case needs a check (for example, the mount warns when a view has no marked field).
-2. **The getter on each instance or on the prototype.** On each instance, making an object costs 1.1 µs per marked field, against 0.08 µs on the prototype. A few views do not care; entities made by the thousand do. The tag plugin can write the prototype form; a decorator needs the `accessor` keyword for it.
-3. **`<script>` or `<script setup>` in a `.tacet` file.** Vue gives the template a file's top-level names only from `<script setup>`. The README's `<script lang="ts">` needs `setup`, or the plugin adds it.
-4. **Vue 3.5 or 3.6.** 3.6 brings the new reactivity and Vapor, but is a release candidate (rc.13, 2026-10-23). The prototype runs on both.
-5. **The tag plugin's parser.** TypeScript (already installed with `vue-tsc`, 575 ms to load per build) or a lighter one (Babel's or oxc's parser).
-6. **A mistyped tag.** `/** @lvie */` is silently plain. Decide whether the plugin warns on an `@` tag on a field that is close to `live` or `deep`.
-7. **Devtools.** Not tried. Open a Tacet view in the Vue devtools in a browser before promising it works there.
+2. **A class loaded with no build.** Tags: plain fields, the screen never updates, no error. Decorators: `SyntaxError`. Decide whether the silent case needs a check (for example, the mount warns when a view has no marked field).
+3. **The getter on each instance or on the prototype.** On each instance, making an object costs 1.1 µs per marked field, against 0.08 µs on the prototype. A few views do not care; entities made by the thousand do. The tag plugin can write the prototype form; a decorator needs the `accessor` keyword for it.
+4. **`<script>` or `<script setup>` in a `.tacet` file.** Vue gives the template a file's top-level names only from `<script setup>`. The README's `<script lang="ts">` needs `setup`, or the plugin adds it.
+5. **Vue 3.5 or 3.6.** 3.6 brings the new reactivity and Vapor, but is a release candidate (rc.13, 2026-10-23). The prototype runs on both.
+6. **The tag plugin's parser.** TypeScript (already installed with `vue-tsc`, 575 ms to load per build) or a lighter one (Babel's or oxc's parser).
+7. **A mistyped tag.** `/** @lvie */` is silently plain. Decide whether the plugin warns on an `@` tag on a field that is close to `live` or `deep`.
+8. **Devtools.** Not tried. Open a Tacet view in the Vue devtools in a browser before promising it works there.
