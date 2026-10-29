@@ -204,6 +204,40 @@ Gone, because the view does their job: `ref`, `reactive`, `computed`, `watch`, `
 
 ## An element of the DOM
 
+When a view needs a DOM element, the template hands it over. Point `ref` at a field of the view: the element goes there when it is drawn, `null` when it is removed.
+
+```html
+<div ref="view.box">
+```
+
+```ts
+private box: HTMLDivElement | null = null;   // plain: never marked, never walked
+```
+
+When something must happen the moment the element arrives, point `ref` at a method instead. The build sees a method and calls it with the element, `null` on removal.
+
+```html
+<canvas ref="view.attachCanvas">
+```
+
+```ts
+public attachCanvas(el: HTMLCanvasElement | null): void {
+    if (el === this.canvas) return;
+    this.canvas = el;
+    if (el) this.draw();
+}
+```
+
+No variable in the script, no hook, nothing kept in the template. The element lives in a plain field of the view, which is the only place a DOM node should ever be.
+
+## What stays from Vue, and what goes
+
+Kept, because they are the good part: the template syntax (`v-for`, `v-if`, `:class`, `@click`, `:key`, slots), props as the way a parent hands a component what it needs (a view, an object), and the lifecycle hooks (`onMounted` and its family) for the component that must act when it is drawn or removed.
+
+Gone, because the view does their job: `ref`, `reactive`, `computed`, `watch`, `watchEffect`, `provide`, `inject`, stores, `emit`. A computed is a getter on the class. A watch is a method called where the change happens. A child does not emit upward, it calls a method on the view it was given.
+
+## An element of the DOM
+
 When a view needs a DOM element, the template hands it over. A `ref` can be a method of the view: the renderer calls it with the element when it is drawn and with `null` when it is removed.
 
 ```html
