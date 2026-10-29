@@ -49,8 +49,8 @@ Tacet is written for TypeScript and works in plain JavaScript. In JavaScript the
 - **entities**: a thing with its fields and what it can do to itself. A `Todo`.
 - **managers**: holds many of them, keeps and reads them, the rules across them. A `TodoManager`.
 - **views**: what one screen needs: its state, its marked fields, its manager. A `TodoView`.
-- **events**: the screen's events, handled apart from the view's state: a key, a click, a change, each turned into a call on the view or its manager. A `TodoEvents`.
-- **components**: the one-file pages and pieces, `.tacet` files. Template, script, style together. The script is the imports, the view and its events, nothing else.
+- **events**: the screen's events, held by the view and handled apart from its state: a key, a click, a change, each turned into a call on the view or its manager. A `TodoEvents`, reached as `view.events`.
+- **components**: the one-file pages and pieces, `.tacet` files. Template, script, style together. The script is the imports and the view, nothing else.
 
 A view can hold another view, an entity or a manager, and read its marked fields through it. Where shared state lives is your design: a third view, composition, inheritance. The framework stays out of it.
 
@@ -132,9 +132,11 @@ export class TodoView {
     @live public draft = "";
     @live public filter: TodoFilter = "all";
     public readonly manager: TodoManager;
+    public readonly events: TodoEvents;
 
     constructor(manager: TodoManager) {
         this.manager = manager;
+        this.events = new TodoEvents(this);
     }
 
     /** The rows the filter keeps */
@@ -160,7 +162,7 @@ export class TodoView {
 }
 ```
 
-**The events** (`events/TodoEvents.ts`). The screen's events, each turned into a call:
+**The events** (`events/TodoEvents.ts`). Held by the view as `view.events`; the screen's events, each turned into a call:
 
 ```ts
 export class TodoEvents {
@@ -196,24 +198,22 @@ export class TodoEvents {
 
 ```html
 <template>
-  <input :value="view.draft" @input="events.handleInput($event)" @keydown.enter="events.handleEnter()" placeholder="What needs doing?">
+  <input :value="view.draft" @input="view.events.handleInput($event)" @keydown.enter="view.events.handleEnter()" placeholder="What needs doing?">
   <ul>
     <li v-for="todo in view.shownTodos" :key="todo.id" :class="{done: todo.isDone}">
-      <input type="checkbox" :checked="todo.isDone" @change="events.handleToggle(todo.id)">
+      <input type="checkbox" :checked="todo.isDone" @change="view.events.handleToggle(todo.id)">
       {{ todo.text }}
-      <button @click="events.handleRemove(todo.id)">×</button>
+      <button @click="view.events.handleRemove(todo.id)">×</button>
     </li>
   </ul>
-  <button v-for="f in filters" :key="f" :class="{picked: view.filter === f}" @click="events.handleFilter(f)">{{ f }}</button>
+  <button v-for="f in filters" :key="f" :class="{picked: view.filter === f}" @click="view.events.handleFilter(f)">{{ f }}</button>
 </template>
 
 <script lang="ts">
   import {TodoView, type TodoFilter} from "../views/TodoView";
-  import {TodoEvents} from "../events/TodoEvents";
   import {TodoManager} from "../managers/TodoManager";
 
   const view = new TodoView(new TodoManager());
-  const events = new TodoEvents(view);
   const filters: TodoFilter[] = ["all", "open", "done"];
 </script>
 
@@ -249,11 +249,12 @@ export class TodoView {
     /** @live */ draft = "";
     /** @live */ filter = "all";
     manager;
+    events;
     // the rest as above, without the types
 }
 ```
 
-What is not there: `ref()`, computed, watch, stores, emits, a base class, a call to make things live, a place to register views. The template reads the view and calls the events. The view is a class you can use from a test, from a script, or from anything else.
+What is not there: `ref()`, computed, watch, stores, emits, a base class, a call to make things live, a place to register views. The template reads the view and calls its events. The view is a class you can use from a test, from a script, or from anything else.
 
 ## An element of the DOM
 
