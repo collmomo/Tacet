@@ -1,6 +1,7 @@
 import {parse} from "vue/compiler-sfc";
 import MagicString, {type SourceMap} from "magic-string";
 import type {Plugin} from "vite";
+import {findScriptOpening} from "./marks.js";
 
 export interface FilesOptions {
     /** The module `assignElement` and `readItems` are imported from. Default: "tacet/runtime". */
@@ -54,7 +55,7 @@ export function rewriteTacetFile(code: string, id: string, options: FilesOptions
     const script = descriptor.scriptSetup ?? descriptor.script;
     if (script !== null) {
         if (descriptor.scriptSetup === null) {
-            const open = code.lastIndexOf("<script", script.loc.start.offset);
+            const open = findScriptOpening(code, script.loc.start.offset);
             if (open >= 0) {
                 edit.appendLeft(open + "<script".length, " setup");
                 touched = true;

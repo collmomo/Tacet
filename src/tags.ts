@@ -1,6 +1,7 @@
 import ts from "typescript";
 import MagicString, {type SourceMap} from "magic-string";
 import type {Plugin} from "vite";
+import {readDecoratorMark} from "./marks.js";
 
 export interface TagsOptions {
     /** The module the inserted calls import from. Default: "tacet/runtime". */
@@ -45,15 +46,6 @@ function readMemberName(member: ts.ClassElement): string | undefined {
     return undefined;
 }
 
-function hasDecoratorMark(member: ts.ClassElement): boolean {
-    if (!ts.canHaveDecorators(member)) return false;
-    for (const decorator of ts.getDecorators(member) ?? []) {
-        const expression = decorator.expression;
-        const name = ts.isIdentifier(expression) ? expression.text : ts.isCallExpression(expression) && ts.isIdentifier(expression.expression) ? expression.expression.text : "";
-        if (MARKS.has(name)) return true;
-    }
-    return false;
-}
 
 /** Rewrites the tagged fields and getters of `code`; `null` when it holds no tag. */
 export function rewriteTags(code: string, id: string, options: TagsOptions = {}): TagsResult | null {
@@ -83,7 +75,7 @@ export function rewriteTags(code: string, id: string, options: TagsOptions = {})
                 }
             }
             if (mark === undefined) continue;
-            if (hasDecoratorMark(member)) continue;
+            if (readDecoratorMark(member) !== undefined) continue;
             const name = readMemberName(member);
             const isStatic = ts.canHaveModifiers(member) && (ts.getModifiers(member) ?? []).some(m => m.kind === ts.SyntaxKind.StaticKeyword);
             if (ts.isMethodDeclaration(member)) {

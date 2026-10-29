@@ -3,6 +3,9 @@ import ts from "typescript";
 import path from "node:path";
 import {compileScript, parse as parseSfc} from "vue/compiler-sfc";
 import type {DirectiveNode, ElementNode, ExpressionNode, RootNode, TemplateChildNode} from "@vue/compiler-core";
+import {promoteScriptToSetup, readMark} from "./marks.js";
+
+export {readMark};
 
 export interface Diagnostic {
     file: string;
@@ -57,21 +60,6 @@ const WALKER_RESULTS = new Set(["Object.values", "Object.entries", "Object.assig
 const PURE_GLOBALS = new Set(["Math", "JSON", "Object", "Array", "Number", "String", "Boolean", "BigInt", "Symbol", "Reflect", "Intl"]);
 /** The methods that write into an array, a Map or a Set: a const they are called on is written. */
 const MUTATORS = new Set(["push", "pop", "shift", "unshift", "splice", "sort", "reverse", "fill", "copyWithin", "set", "add", "delete", "clear"]);
-
-export function readMark(member: ts.Node): "live" | "deep" | undefined {
-    if (ts.canHaveDecorators(member)) {
-        for (const decorator of ts.getDecorators(member) ?? []) {
-            const expression = decorator.expression;
-            const name = ts.isIdentifier(expression) ? expression.text : ts.isCallExpression(expression) && ts.isIdentifier(expression.expression) ? expression.expression.text : "";
-            if (name === "live" || name === "deep") return name;
-        }
-    }
-    for (const tag of ts.getJSDocTags(member)) {
-        const name = tag.tagName.text;
-        if (name === "live" || name === "deep") return name;
-    }
-    return undefined;
-}
 
 function hasModifier(node: ts.Node, kind: ts.SyntaxKind): boolean {
     return ts.canHaveModifiers(node) && (ts.getModifiers(node) ?? []).some(modifier => modifier.kind === kind);
@@ -749,9 +737,7 @@ function buildVirtualFile(tacet: string, source: string): VirtualFile {
         try {
             let setup = descriptor;
             if (descriptor.scriptSetup === null) {
-                const open = source.lastIndexOf("<script", script.loc.start.offset);
-                const withSetup = source.slice(0, open + "<script".length) + " setup" + source.slice(open + "<script".length);
-                setup = parseSfc(withSetup, {filename: tacet}).descriptor;
+                setup = parseSfc(promoteScriptToSetup(source, script.loc.start.offset), {filename: tacet}).descriptor;
             }
             const compiled = compileScript(setup, {id: tacet});
             propNames = Object.entries(compiled.bindings ?? {}).filter(([, kind]) => kind === "props").map(([name]) => name);
