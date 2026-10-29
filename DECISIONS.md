@@ -14,15 +14,17 @@
 
 - The marks are DECORATORS, `@live` and `@deep`, as the README shows them: the `.tacet` build compiles them (TypeScript 5's standard decorators, no flag) so nothing waits on the browsers. The comment tag `/** @live */` is the same mark spelled for plain JavaScript, one runtime under both (the owner, 2026-10-29).
 
+- `@live` tracks assignment, `@deep` tracks mutation: a push under `@live` tells no one; under `@deep` it does (the owner, 2026-10-30).
+- A `@live` getter may read only marked fields, checked by the build hop by hop through the types (`this.a.b.c`: a mark on each hop's class, or a plain object under a `@deep` field); a plain or unknowable hop is a BUILD ERROR naming the hop, never a stale value (the owner, 2026-10-30: "compilation problems seem like a good idea").
+- `@deep` stops at a class instance: it walks plain objects and arrays, never enters a class; a class's surface is its own marks only, so one mark never changes another field's behaviour (the owner, 2026-10-30).
+- A `@live` getter that reads an unmarked field keeping its old value "by design" is withdrawn: it is the build error above.
+
 ## Open
 
-1. **Arrays and maps under `@live`.** `push`, `set` and `splice` are silent; only a new array or map notifies. Either the rule is "replace it", or such a field must be `@deep`.
-2. **A class loaded with no build.** Tags: plain fields, the screen never updates, no error. Decorators: `SyntaxError`. Decide whether the silent case needs a check (for example, the mount warns when a view has no marked field).
-3. **One mark makes a whole object raw.** An entity with one `@live` field is no longer seen into by a `@deep` list that holds it: its unmarked fields stop updating the screen (tested). The rule has to say so, or the mark must not make the object raw.
-4. **An unmarked class inside `@deep` is walked**, big fields included: the grouping lag's shape. Keep this as "`@deep` means everything inside", or stop `@deep` at any class instance.
-5. **The getter on each instance or on the prototype.** On each instance, making an object costs 1.1 µs per marked field, against 0.08 µs on the prototype. A few views do not care; entities made by the thousand do. The tag plugin can write the prototype form; a decorator needs the `accessor` keyword for it.
-6. **`<script>` or `<script setup>` in a `.tacet` file.** Vue gives the template a file's top-level names only from `<script setup>`. The README's `<script lang="ts">` needs `setup`, or the plugin adds it.
-7. **Vue 3.5 or 3.6.** 3.6 brings the new reactivity and Vapor, but is a release candidate (rc.13, 2026-10-23). The prototype runs on both.
-8. **The tag plugin's parser.** TypeScript (already installed with `vue-tsc`, 575 ms to load per build) or a lighter one (Babel's or oxc's parser).
-9. **A mistyped tag.** `/** @lvie */` is silently plain. Decide whether the plugin warns on an `@` tag on a field that is close to `live` or `deep`.
-10. **Devtools.** Not tried. Open a Tacet view in the Vue devtools in a browser before promising it works there.
+1. **A class loaded with no build.** Tags: plain fields, the screen never updates, no error. Decorators: `SyntaxError`. Decide whether the silent case needs a check (for example, the mount warns when a view has no marked field).
+2. **The getter on each instance or on the prototype.** On each instance, making an object costs 1.1 µs per marked field, against 0.08 µs on the prototype. A few views do not care; entities made by the thousand do. The tag plugin can write the prototype form; a decorator needs the `accessor` keyword for it.
+3. **`<script>` or `<script setup>` in a `.tacet` file.** Vue gives the template a file's top-level names only from `<script setup>`. The README's `<script lang="ts">` needs `setup`, or the plugin adds it.
+4. **Vue 3.5 or 3.6.** 3.6 brings the new reactivity and Vapor, but is a release candidate (rc.13, 2026-10-23). The prototype runs on both.
+5. **The tag plugin's parser.** TypeScript (already installed with `vue-tsc`, 575 ms to load per build) or a lighter one (Babel's or oxc's parser).
+6. **A mistyped tag.** `/** @lvie */` is silently plain. Decide whether the plugin warns on an `@` tag on a field that is close to `live` or `deep`.
+7. **Devtools.** Not tried. Open a Tacet view in the Vue devtools in a browser before promising it works there.

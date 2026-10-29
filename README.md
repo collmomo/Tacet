@@ -24,6 +24,13 @@ No mark: plain. The framework never touches it.
 
 `@live` on a getter: the result is kept until one of the live fields it read changes. A getter with no mark is a plain getter and runs on every read. A method never needs a mark.
 
+In one sentence: `@live` tracks assignment, `@deep` tracks mutation. `items.push(x)` under `@live` tells no one; `items = [...items, x]` does. Under `@deep`, the push is enough.
+
+Two rules keep the marks honest:
+
+- **A `@live` getter may read only what is marked.** The build checks every hop of every path it reads: `this.object.other.value` needs a mark on `object` here, on `other` in `object`'s class, on `value` in `other`'s class. A plain hop would leave the getter stale, so the build refuses with the hop's name. A path under a `@deep` field needs no marks on its plain objects. A hop the build cannot see through, typed `any` or `unknown`, is refused too.
+- **`@deep` stops at a class.** It walks plain objects and arrays all the way down and never enters a class instance. A class always decides its own surface with its own marks, so marking one field of it never changes what its other fields do, wherever the object sits.
+
 Tacet is written for TypeScript and works in plain JavaScript. In JavaScript the marks are comment tags that the build reads, and the build already exists because the one-file components need it:
 
 ```js
