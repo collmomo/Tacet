@@ -22,7 +22,7 @@ Two marks. That is the whole surface on a class.
 
 No mark: plain. The framework never touches it.
 
-A getter that reads marked fields is cached, and refreshed only when one of them changes.
+`@live` on a getter: the result is kept until one of the live fields it read changes. A getter with no mark is a plain getter and runs on every read. A method never needs a mark.
 
 Tacet is written for TypeScript and works in plain JavaScript. In JavaScript the marks are comment tags that the build reads, and the build already exists because the one-file components need it:
 
@@ -42,7 +42,7 @@ A view can hold another view, an entity or a manager, and read its marked fields
 
 ## The rules
 
-- The template is a projection. It reads a view and calls it. It never owns state.
+- The template is a projection. It reads a view and calls it. It never owns state and never writes a field: a change goes through a method, the same method a test or a tool would call.
 - A view is a plain class. One public method per user action. No base class.
 - Nothing is walked unless it is marked.
 - A value that has not changed is never written. A marked setter compares first.
@@ -104,9 +104,13 @@ export class TodoView {
     }
 
     /** The rows the filter keeps */
-    public get shownTodos(): Todo[] {
+    @live public get shownTodos(): Todo[] {
         if (this.filter === "all") return this.todos;
         return this.todos.filter(todo => todo.isDone === (this.filter === "done"));
+    }
+
+    public typeDraft(text: string): void {
+        this.draft = text;
     }
 
     public addTodo(): void {
@@ -137,7 +141,7 @@ export class TodoView {
 
 ```html
 <template>
-  <input :value="view.draft" @input="view.draft = $event.target.value" @keydown.enter="view.addTodo()" placeholder="What needs doing?">
+  <input :value="view.draft" @input="view.typeDraft($event.target.value)" @keydown.enter="view.addTodo()" placeholder="What needs doing?">
   <ul>
     <li v-for="todo in view.shownTodos" :key="todo.id" :class="{done: todo.isDone}">
       <input type="checkbox" :checked="todo.isDone" @change="view.toggleTodo(todo.id)">
@@ -171,7 +175,7 @@ The root component makes its own objects. A child gets its view as a prop, or re
 
 ```ts
 const view = new TodoView(new FakeStorage());
-view.draft = "milk";
+view.typeDraft("milk");
 view.addTodo();
 expect(view.shownTodos.map(todo => todo.text)).toEqual(["milk"]);
 view.setFilter("done");
