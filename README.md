@@ -8,7 +8,7 @@ Nothing moves unless you marked it.
 
 The screen is a picture of your objects. It reads them and calls them. It owns nothing.
 
-Your logic lives in classes you write the way you always did: fields at the top, one public method per thing a user can do. No store, no hooks, no special object to extend, no function to call to make it work.
+Your logic lives in classes you write the way you always did: fields at the top, one public method per thing a user can do. No store, no watchers, no special object to extend, no function to call to make it work.
 
 You mark the few fields the screen reads. Everything else is plain: never watched, never walked, never wrapped. A class can hold a million-row table in a plain field and the framework will never know it is there.
 
@@ -18,7 +18,7 @@ Two marks. That is the whole surface on a class.
 
 `@live` on a field: the screen follows it. Shallow: the value, not what is inside it. A write that does not change the value does nothing.
 
-`@deep` on a field: the screen follows it and everything inside it. For a tree the template really walks: a list of rows, a set of options. Rare, and on purpose.
+`@deep` on a field: the screen follows it and the plain objects and arrays inside it, all the way down, stopping at any class. For a tree the template really walks: a list of rows, a set of options. Rare, and on purpose.
 
 No mark: plain. The framework never touches it.
 
@@ -26,7 +26,7 @@ No mark: plain. The framework never touches it.
 
 In one sentence: `@live` tracks assignment, `@deep` tracks mutation. `items.push(x)` under `@live` tells no one; `items = [...items, x]` does. Under `@deep`, the push is enough.
 
-Two rules keep the marks honest:
+Three rules keep the marks honest:
 
 - **A `@live` getter may read only what is marked.** The build checks every hop of every path it reads: `this.object.other.value` needs a mark on `object` here, on `other` in `object`'s class, on `value` in `other`'s class. A plain hop would leave the getter stale, so the build refuses with the hop's name. Two kinds of hop need no mark: a `readonly` field, assigned once and never again, and the plain objects under a `@deep` field. A hop the build cannot see through, typed `any` or `unknown`, is refused too. A getter with no mark reads anything: the rule is the price of caching, not of reading.
 - **A class with no marks is a value.** A library's object, a Date, a range, a chart, has no surface to mark. Hold it in a marked field and replace it when it changes; the getter follows the field. Its own insides tell no one.
@@ -44,7 +44,7 @@ Tacet is written for TypeScript and works in plain JavaScript. In JavaScript the
 - **entities**: a thing with its fields and what it can do to itself. A `Todo`.
 - **managers**: holds many of them, keeps and reads them, the rules across them. A `TodoStorage`.
 - **views**: what one screen needs. One public method per user action. The marked fields. A `TodoView`.
-- **components**: the one-file pages and pieces, `.tacet` files. Template, script, style together. The script is one line.
+- **components**: the one-file pages and pieces, `.tacet` files. Template, script, style together. The script is a line or two.
 
 A view can hold another view, an entity or a manager, and read its marked fields through it. Where shared state lives is your design: a third view, composition, inheritance. The framework stays out of it.
 
@@ -59,7 +59,7 @@ A view can hold another view, an entity or a manager, and read its marked fields
 
 ## A todo app
 
-TypeScript, three files. The same code runs as plain JavaScript with the marks as comment tags: drop the types, keep the shape.
+TypeScript, five small files. The same code runs as plain JavaScript with the marks as comment tags: drop the types, keep the shape.
 
 **The entity and the manager** (`entities/Todo.ts`, `managers/TodoStorage.ts`). The entity marks what the screen follows on it, since `@deep` on the view's list tracks the list and stops at the class:
 
@@ -85,7 +85,7 @@ export class TodoStorage {
     private static readonly KEY = "todos";
 
     public readTodos(): Todo[] {
-        const rows: {text: string; isDone: boolean}[] = JSON.parse(localStorage.getItem(TodoStorage.KEY) ?? "[]");
+        const rows: {id: string; text: string; isDone: boolean}[] = JSON.parse(localStorage.getItem(TodoStorage.KEY) ?? "[]");
         return rows.map(row => Object.assign(new Todo(row.text), row));
     }
 
@@ -202,7 +202,7 @@ export class TodoView {
 }
 ```
 
-What is not there: refs, computed, watch, stores, emits, a base class, a call to make things live, a place to register views. The template reads the view and calls it. The view is a class you can use from a test, from a script, or from anything else.
+What is not there: `ref()`, computed, watch, stores, emits, a base class, a call to make things live, a place to register views. The template reads the view and calls it. The view is a class you can use from a test, from a script, or from anything else.
 
 ## An element of the DOM
 
@@ -222,7 +222,7 @@ No variable in the script, no method for it, nothing kept in the template. The e
 
 Kept, because they are the good part: the template syntax (`v-for`, `v-if`, `:class`, `@click`, `:key`, slots), props as the way a parent hands a component what it needs (a view, an object), and the lifecycle hooks (`onMounted` and its family) for the component that must act when it is drawn or removed.
 
-Gone, because the view does their job: `ref`, `reactive`, `computed`, `watch`, `watchEffect`, `provide`, `inject`, stores, `emit`. A computed is a getter on the class. A watch is a method called where the change happens. A child does not emit upward, it calls a method on the view it was given.
+Gone, because the view does their job: `ref()` in the script, `reactive`, `computed`, `watch`, `watchEffect`, `provide`, `inject`, stores, `emit`. The `ref` attribute in a template stays: it is how an element reaches a view. A computed is a getter on the class. A watch is a method called where the change happens. A child does not emit upward, it calls a method on the view it was given.
 
 ## What Tacet is, and is not
 
