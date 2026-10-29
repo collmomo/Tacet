@@ -4,9 +4,9 @@
  */
 import vue, {type Options as VueOptions} from "@vitejs/plugin-vue";
 import type {Plugin, ResolvedConfig} from "vite";
-import {tacetTags, type TagsOptions} from "./tags";
-import {tacetFiles, type FilesOptions} from "./files";
-import {Checker, formatDiagnostic, type CheckOptions} from "./check";
+import {tacetTags, type TagsOptions} from "./tags.js";
+import {tacetFiles, type FilesOptions} from "./files.js";
+import {Checker, formatDiagnostic, type CheckOptions} from "./check.js";
 
 export interface TacetOptions extends TagsOptions, FilesOptions {
     /** Passed on to `@vitejs/plugin-vue` for the `.tacet` files. */
@@ -61,4 +61,4 @@ export function tacet(options: TacetOptions = {}): Plugin[] {
 }
 
 export {tacetTags, tacetFiles, type TagsOptions, type FilesOptions};
-export {Checker, checkProject, formatDiagnostic, type CheckOptions, type Diagnostic} from "./check";
+export {Checker, checkProject, formatDiagnostic, type CheckOptions, type Diagnostic} from "./check.js";

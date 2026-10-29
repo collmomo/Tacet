@@ -4,18 +4,26 @@
   "description": "A way to build a screen with plain classes. Nothing moves unless you marked it.",
   "type": "module",
   "license": "MIT",
-  "main": "./src/index.ts",
-  "types": "./src/index.ts",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
-    ".": "./src/index.ts",
-    "./vite": "./src/vite.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./vite": {
+      "types": "./dist/vite.d.ts",
+      "import": "./dist/vite.js"
+    }
   },
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "test": "vitest run",
     "check": "vue-tsc --noEmit",
-    "bench": "BENCH=1 NODE_OPTIONS=\"--expose-gc --max-old-space-size=12288\" vitest run --dir bench --pool=forks"
+    "bench": "BENCH=1 NODE_OPTIONS=\"--expose-gc --max-old-space-size=12288\" vitest run --dir bench --pool=forks",
+    "build:lib": "tsc -p tsconfig.lib.json",
+    "prepack": "npm run build:lib"
   },
   "peerDependencies": {
     "@vitejs/plugin-vue": "^6.0.0",
@@ -36,5 +44,10 @@
     "vitest": "^3.2.0",
     "vue": "^3.5.0",
     "vue-tsc": "^3.0.0"
-  }
+  },
+  "files": [
+    "dist",
+    "src",
+    "README.md"
+  ]
 }

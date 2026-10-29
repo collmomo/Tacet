@@ -33,7 +33,7 @@ So the ref is not the cost of an instance; `Object.defineProperty` on the instan
 
 **Vue 3.6.0-rc.13.** The whole suite, 40 tests, passes unchanged with the rc installed in a copy, the new `@deep` proxy over `shallowReactive` included. A `.tacet` file with `<script setup lang="ts" vapor>` mounted through `createVaporApp` reads the view, follows its marks and hands the element to the field; in the rc, Vapor is only in the `vue.runtime-with-vapor` browser bundle, so that test aliases `vue` to it, and under that alias the two `@vue/test-utils` mounts of the suite fail with a second copy of Vue (not Tacet's doing).
 
-**A browser.** The todo app in `example/`, served by `vite dev`, driven by Playwright in Chromium: add, toggle, filter, remove, reload with the localStorage rows back, the draft cleared, no console errors or warnings.
+**A browser.** The todo app in `example/`, served by `vite dev`, driven by Playwright in Chromium: add, toggle, filter, remove, reload with the localStorage rows back, the draft cleared, no console errors or warnings. Then a hot reload: an edit to the `.tacet` template (the placeholder text) reached the page in place with the rows kept, so the `setup` and `ref` rewrites do not get in Vue's HMR's way; an edit that put `v-model` on the draft was refused by the check in the dev log within 50 ms (the first check after start takes about a second, the next ones 40 to 60 ms with the program kept).
 
 **The check in dev.** The first run builds a TypeScript program (about 0.3 s on this repo, 2 s on the test fixtures with the DOM lib); a `Checker` keeps the program and its parsed files between runs, so a change costs a fraction of that.
 

@@ -346,6 +346,8 @@ npm run dev      # the todo app, from example/
 npm test         # the runtime, the tags, the .tacet files, the check, the app: no browser
 npm run check    # vue-tsc over everything, templates included
 npm run build    # the app, with the check
+npm run build:lib  # the library to dist/, with its types
+npm run bench    # the redraw cost and the price of a mark
 ```
 
 The library is `src/`: `tacet.ts` is the runtime (the marks, the getter, `as live`, the element), `tags.ts` the comment tags, `files.ts` the `.tacet` files, `check.ts` the check, `vite.ts` the plugin that ties them together.
