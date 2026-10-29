@@ -8,7 +8,7 @@
 - The marks are `@live` (shallow, compares before writing) and `@deep`. No base class, no call to make things live.
 - Written for TypeScript with the owner's conventions; plain JavaScript works through the comment tags.
 - A getter is cached only when marked `@live`: it follows what it reads and keeps its result until one of them changes. An unmarked getter is a plain getter. Methods never need a mark. (A `@live` getter must read only marked fields: one that reads a plain field keeps its old value, tested.)
-- A DOM element reaches a view through a function ref, `<canvas ref="view.attachCanvas">`: the method gets the element on mount and `null` on unmount and keeps it in a plain field. No `ref()` variable, no `onMounted` for that. Vue alone does not do this (it reads the text as a name; `:ref="view.attachCanvas"` loses `this`), so the `.tacet` step rewrites it to `:ref="el => view.attachCanvas(el)"` (24 lines, tested). Vue calls a function ref again on every redraw with the same element, so the method compares first.
+- A DOM element reaches a view through `ref="view.box"` on a plain field: the `.tacet` build assigns the element on mount and `null` on unmount, writing only when it differs; no method form (the owner, 2026-10-29); something to do on arrival is the component's `onMounted`.
 
 - A template never writes a field: a change goes through a method of the view (`view.typeDraft(...)`), the same method a test or a tool would call (the README's todo app does so).
 
