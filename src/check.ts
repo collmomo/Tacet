@@ -60,6 +60,8 @@ const WALKER_RESULTS = new Set(["Object.values", "Object.entries", "Object.assig
 const PURE_GLOBALS = new Set(["Math", "JSON", "Object", "Array", "Number", "String", "Boolean", "BigInt", "Symbol", "Reflect", "Intl"]);
 /** The methods that write into an array, a Map or a Set: a const they are called on is written. */
 const MUTATORS = new Set(["push", "pop", "shift", "unshift", "splice", "sort", "reverse", "fill", "copyWithin", "set", "add", "delete", "clear"]);
+/** The template prelude's helpers, which only read their argument. */
+const PRELUDE_HELPERS = new Set(["__each", "__event", "__ref"]);
 
 function hasModifier(node: ts.Node, kind: ts.SyntaxKind): boolean {
     return ts.canHaveModifiers(node) && (ts.getModifiers(node) ?? []).some(modifier => modifier.kind === kind);
@@ -107,6 +109,40 @@ function isWriteTarget(node: ts.Node): boolean {
         }
         target = parent;
     }
+}
+
+function isValuePassingOperator(kind: ts.SyntaxKind): boolean {
+    return kind === ts.SyntaxKind.QuestionQuestionToken || kind === ts.SyntaxKind.BarBarToken || kind === ts.SyntaxKind.AmpersandAmpersandToken || kind === ts.SyntaxKind.CommaToken;
+}
+
+/** Whether `reference` only reads the name in place: the value neither reaches another holder nor is written through it. */
+function isPlainRead(reference: ts.Node): boolean {
+    let node = reference;
+    for (;;) {
+        const parent = node.parent;
+        const passesValue = ts.isParenthesizedExpression(parent) || ts.isNonNullExpression(parent) || ts.isAsExpression(parent) || ts.isTypeAssertionExpression(parent) || ts.isSatisfiesExpression(parent)
+            || (ts.isConditionalExpression(parent) && parent.condition !== node)
+            || (ts.isBinaryExpression(parent) && isValuePassingOperator(parent.operatorToken.kind));
+        if (!passesValue) break;
+        node = parent;
+    }
+    const parent = node.parent;
+    if ((ts.isPropertyAccessExpression(parent) || ts.isElementAccessExpression(parent)) && parent.expression === node) return !isWriteTarget(node);
+    if (ts.isCallExpression(parent)) return parent.expression === node || (ts.isIdentifier(parent.expression) && PRELUDE_HELPERS.has(parent.expression.text));
+    if (ts.isNewExpression(parent)) return parent.expression === node;
+    if (ts.isTaggedTemplateExpression(parent)) return parent.tag === node;
+    if (ts.isTemplateSpan(parent)) return !ts.isTaggedTemplateExpression(parent.parent.parent);
+    if (ts.isVoidExpression(parent) || ts.isTypeOfExpression(parent) || ts.isExpressionStatement(parent) || ts.isTypeQueryNode(parent)) return true;
+    if (ts.isPrefixUnaryExpression(parent) || ts.isPostfixUnaryExpression(parent)) return !isCountOperator(parent.operator);
+    if (ts.isBinaryExpression(parent)) return !isAssignmentOperator(parent.operatorToken.kind);
+    if (ts.isConditionalExpression(parent) || ts.isIfStatement(parent) || ts.isWhileStatement(parent) || ts.isDoStatement(parent) || ts.isSwitchStatement(parent) || ts.isCaseClause(parent)) return true;
+    if (ts.isForStatement(parent)) return parent.initializer !== node;
+    return false;
+}
+
+function findEnclosingFunction(node: ts.Node): ts.Node | undefined {
+    for (let parent = node.parent; parent !== undefined; parent = parent.parent) if (ts.isFunctionLike(parent)) return parent;
+    return undefined;
 }
 
 interface Frame {
@@ -341,19 +377,26 @@ class Analysis {
         return source === "fresh" ? "fixed" : source;
     }
 
-    /** A module-level const the script writes into is not a value; its file is scanned once. */
+    /** A module-level const anyone may write is not a value: one exported, or referenced in its file other than as a plain read; the file is scanned once. */
     private isWrittenConst(declaration: ts.VariableDeclaration): boolean {
         const known = this.writtenConsts.get(declaration);
         if (known !== undefined) return known;
-        let written = false;
+        let written = hasModifier(declaration.parent.parent, ts.SyntaxKind.ExportKeyword);
         const visitNode = (node: ts.Node): void => {
             if (written) return;
-            if (ts.isIdentifier(node) && node !== declaration.name && this.checker.getSymbolAtLocation(node)?.valueDeclaration === declaration) written = isWriteTarget(node);
+            if (ts.isExportSpecifier(node)) written = this.checker.getExportSpecifierLocalTargetSymbol(node)?.valueDeclaration === declaration;
+            else if (ts.isIdentifier(node) && node !== declaration.name && this.findReferencedDeclaration(node) === declaration) written = !isPlainRead(node);
             else ts.forEachChild(node, visitNode);
         };
         visitNode(declaration.getSourceFile());
         this.writtenConsts.set(declaration, written);
         return written;
+    }
+
+    private findReferencedDeclaration(node: ts.Identifier): ts.Declaration | undefined {
+        const shorthand = ts.isShorthandPropertyAssignment(node.parent) && node.parent.name === node;
+        const symbol = shorthand ? this.checker.getShorthandAssignmentValueSymbol(node.parent) : this.checker.getSymbolAtLocation(node);
+        return symbol?.valueDeclaration;
     }
 
     /** A read of `base.name`. */
@@ -369,6 +412,11 @@ class Analysis {
     private readMember(node: ts.Node, base: ts.Expression, baseSource: Source, baseType: ts.Type, name: string, property: ts.Symbol | undefined): Source {
         const declaration = this.findDeclaration(property);
         if (property === undefined || declaration === undefined) return this.readElementSource(base, baseSource);
+        return this.readProperty(node, baseSource, baseType, name, property, declaration);
+    }
+
+    /** A declared property of `baseType`, read by a dot or by a destructuring: the same rules either way. */
+    private readProperty(node: ts.Node, baseSource: Source, baseType: ts.Type, name: string, property: ts.Symbol, declaration: ts.Declaration): Source {
         const text = this.readText(node);
         if (declaration.getSourceFile().isDeclarationFile) {
             const container = this.nameContainer(baseType);
@@ -430,10 +478,10 @@ class Analysis {
             const declaration = this.findDeclaration(this.checker.getSymbolAtLocation(callee));
             if (declaration === undefined || declaration.getSourceFile().isDeclarationFile) return this.evaluateLibraryCall(node, frame);
             const sources = this.evaluateArguments(node, frame);
-            if (ts.isFunctionDeclaration(declaration) && declaration.body !== undefined) return this.followBody(declaration, declaration.body, sources, {locals: new Map(), thisSource: "leaf"}, declaration.parameters);
+            if (ts.isFunctionDeclaration(declaration) && declaration.body !== undefined) return this.followBody(declaration, declaration.body, sources, this.buildCalleeFrame(declaration, frame, "leaf"), declaration.parameters);
             if (ts.isVariableDeclaration(declaration) && declaration.initializer !== undefined && isFunctionLike(declaration.initializer)) {
                 const fn = declaration.initializer;
-                return this.followBody(fn, fn.body, sources, {locals: new Map(), thisSource: "leaf"}, fn.parameters);
+                return this.followBody(fn, fn.body, sources, this.buildCalleeFrame(declaration, frame, ts.isArrowFunction(fn) ? frame.thisSource : "leaf"), fn.parameters);
             }
             this.reportError(node, `"${this.readText(callee)}()": a call the build cannot see through (a function passed by reference). Call a function of this module or a method of the class instead.`);
             return "leaf";
@@ -476,6 +524,12 @@ class Analysis {
         this.evaluateArguments(node, frame);
         this.reportError(node, `"${this.readText(callee)}()": a call the build cannot see through.`);
         return "leaf";
+    }
+
+    /** A function declared inside a body being followed closes over that body's locals; a module's function sees none, and only an arrow keeps the caller's `this`. */
+    private buildCalleeFrame(declaration: ts.Declaration, caller: Frame, thisSource: Source): Frame {
+        const enclosing = findEnclosingFunction(declaration);
+        return enclosing !== undefined && this.stack.has(enclosing) ? {locals: caller.locals, thisSource} : {locals: new Map(), thisSource: "leaf"};
     }
 
     private evaluateArguments(node: ts.CallExpression, frame: Frame): Source[] {
@@ -560,19 +614,8 @@ class Analysis {
     private readPatternMember(element: ts.BindingElement, source: Source, type: ts.Type, name: string): Source {
         const property = this.checker.getPropertyOfType(type.getNonNullableType(), name);
         const declaration = this.findDeclaration(property);
-        if (property === undefined || declaration === undefined || declaration.getSourceFile().isDeclarationFile) return isFollowed(source) ? source : "fixed";
-        if (isClassMember(declaration) && ts.isPropertyDeclaration(declaration)) {
-            const mark = readMark(declaration);
-            if (mark === "live") { this.noteRead(declaration); return "tracked"; }
-            if (mark === "deep") { this.noteRead(declaration); return "deep"; }
-            if (hasModifier(declaration, ts.SyntaxKind.ReadonlyKeyword)) return "fixed";
-            this.reportError(element, `"${name}" is a plain field that can change, and ${this.nameReader()} would not follow it. Mark it @live or @deep, or make it readonly.`);
-            return "leaf";
-        }
-        if (isFollowed(source)) return source;
-        if (this.isReadonlyProperty(property, type)) return "fixed";
-        this.reportError(element, `"${name}" is a plain property that can change by mutation, and the object is not followed. Hold the object in a @deep field, or declare "${name}" readonly.`);
-        return "leaf";
+        if (property === undefined || declaration === undefined) return isFollowed(source) ? source : "fixed";
+        return this.readProperty(element, source, type, name, property, declaration);
     }
 
     private checkStatements(list: readonly ts.Statement[], frame: Frame, returns: Source[]): void {
@@ -697,6 +740,8 @@ class Analysis {
 interface VirtualFile {
     name: string;
     tacet: string;
+    /** The .tacet file's text, read once, for placing a diagnostic. */
+    source: string;
     code: string;
     ranges: {from: number; to: number; offset: number}[];
     templateStart: number;
@@ -712,6 +757,8 @@ declare function __event(handler: ($event: any) => unknown): void;
 declare function __ref(field: unknown): void;
 declare const $event: any, $attrs: any, $slots: any, $refs: any, $el: any, $props: any, $emit: any, $nextTick: any;
 `;
+/** Vue's wording for a directive its transform refuses; its parser lets these through with no expression. */
+const DIRECTIVE_ERRORS = {missingCondition: "v-if/v-else-if is missing expression.", missingItems: "v-for is missing expression.", brokenItems: "v-for has invalid expression."};
 /** A static `ref` whose value is a path into an object, the form `src/files.ts` rewrites into an assignment. */
 const REF_PATH = /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+$/;
 
@@ -723,7 +770,7 @@ function findLineColumn(source: string, offset: number): {line: number; column: 
 function buildVirtualFile(tacet: string, source: string): VirtualFile {
     const {descriptor, errors} = parseSfc(source, {filename: tacet});
     const diagnostics: Diagnostic[] = [];
-    const virtual: VirtualFile = {name: tacet + ".ts", tacet, code: "", ranges: [], templateStart: 0, diagnostics};
+    const virtual: VirtualFile = {name: tacet + ".ts", tacet, source, code: "", ranges: [], templateStart: 0, diagnostics};
     for (const error of errors) {
         const at = "loc" in error && error.loc !== undefined ? findLineColumn(source, error.loc.start.offset) : {line: 1, column: 1};
         diagnostics.push({file: tacet, ...at, level: "error", message: error.message});
@@ -774,10 +821,18 @@ function buildVirtualFile(tacet: string, source: string): VirtualFile {
         }
     };
 
+    const reportDirective = (directive: DirectiveNode, message: string): void => {
+        virtual.diagnostics.push({file: tacet, ...findLineColumn(source, directive.loc.start.offset), level: "error", message});
+    };
+
     const emitElement = (node: ElementNode, siblings: TemplateChildNode[], index: number): number => {
         const directives = node.props.filter((prop): prop is DirectiveNode => prop.type === 7);
+        for (const directive of directives) {
+            if ((directive.name === "if" || directive.name === "else-if") && directive.exp === undefined) reportDirective(directive, DIRECTIVE_ERRORS.missingCondition);
+            if (directive.name === "for" && directive.forParseResult === undefined) reportDirective(directive, directive.exp === undefined ? DIRECTIVE_ERRORS.missingItems : DIRECTIVE_ERRORS.brokenItems);
+        }
         const vFor = directives.find(d => d.name === "for");
-        const vIf = directives.find(d => d.name === "if");
+        const vIf = directives.find(d => d.name === "if" && d.exp !== undefined);
         let closers = "";
         if (vFor?.forParseResult !== undefined) {
             const {source: items, value, key, index: position} = vFor.forParseResult;
@@ -787,8 +842,8 @@ function buildVirtualFile(tacet: string, source: string): VirtualFile {
             emitExpression(items, "", ")) {\n");
             closers += "}\n";
         }
-        if (vIf !== undefined) {
-            emitExpression(vIf.exp!, "if (", ") {\n");
+        if (vIf?.exp !== undefined) {
+            emitExpression(vIf.exp, "if (", ") {\n");
             closers += "}\n";
         }
         for (const prop of node.props) {
@@ -935,7 +990,7 @@ function checkFiles(files: string[], compilerOptions: ts.CompilerOptions, virtua
     const locatePosition: Locate = (file, position) => {
         const virtual = virtuals.get(file.fileName);
         if (virtual !== undefined) {
-            const source = ts.sys.readFile(virtual.tacet) ?? "";
+            const {source} = virtual;
             const range = virtual.ranges.find(r => position >= r.from && position <= r.to);
             if (range !== undefined) return {file: virtual.tacet, ...findLineColumn(source, range.offset + (position - range.from))};
             if (position < virtual.templateStart) {

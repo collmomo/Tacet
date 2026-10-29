@@ -64,6 +64,31 @@ describe("the getter check", () => {
         ]);
     });
 
+    it("follows a local arrow or function with the getter's locals and this", () => {
+        const errors = checkFixture("Locals.ts").filter(d => d.level === "error");
+        expect(errors.map(d => [d.line, d.message])).toEqual([
+            [9, `"this.plain": "plain" is a plain field of LocalsView that can change, and the getter would not follow it. Mark it @live or @deep, or make it readonly.`],
+            [9, `"this.rows.map": "map" reads an array that can change by mutation, and @live follows the field's value, not what is inside it. Mark the field @deep, or type it ReadonlyArray.`],
+            [15, `"rows.map": "map" reads an array that can change by mutation, and @live follows the field's value, not what is inside it. Mark the field @deep, or type it ReadonlyArray.`],
+            [21, `"rows.length": "length" of Array can change by mutation, and @live follows the field's value, not what is inside it. Mark the field @deep, or type it ReadonlyArray.`],
+        ]);
+    });
+
+    it("reads a destructured property by the rules of the dotted read: a container under @live, under @deep, a library object", () => {
+        const errors = checkFixture("Patterns.ts").filter(d => d.level === "error");
+        expect(errors.map(d => [d.line, d.message])).toEqual([
+            [8, `"this.rows.length": "length" of Array can change by mutation, and @live follows the field's value, not what is inside it. Mark the field @deep, or type it ReadonlyArray.`],
+            [9, `"length": "length" of Array can change by mutation, and @live follows the field's value, not what is inside it. Mark the field @deep, or type it ReadonlyArray.`],
+            [12, `"clientWidth": a read into HTMLDivElement, a library object that can change under the getter with nothing to mark. Hold it in a @live field and replace it when it changes, or read that one property \`as live\` if the owner opens it.`],
+        ]);
+    });
+
+    it("treats a const as a value only when nothing can write it: not exported, not held by another name", () => {
+        const written = `"shared.x": "x" is a plain property that can change by mutation, and the object is not followed. Hold the object in a @deep field, or declare "x" readonly.`;
+        const exported = checkSources([findFixture("Shared.ts"), findFixture("SharedWriter.ts")], {}, options);
+        expect(exported.map(d => [d.file, d.line, d.message])).toEqual([[findFixture("Shared.ts"), 6, written]]);
+        expect(checkFixture("Alias.ts").map(d => [d.line, d.message])).toEqual([[8, written]]);
+    });
 });
 
 describe("the template check", () => {
@@ -91,6 +116,16 @@ describe("the template check", () => {
             [9, 8, `ref="view.counter": "counter" is readonly, and the element is written into it when it is drawn and removed. Make it a plain field.`],
             [10, 8, `ref="view.a": "a" is not a field. The element goes into a plain field of the view, never a getter or a method.`],
             [11, 18, `"pushed": what is inside it can change and is not followed. Hold it in a @deep field, or type it readonly.`],
+        ]);
+    });
+
+    it("names a directive with no expression in Vue's words, and goes on", () => {
+        const diagnostics = checkSources([], readTacet("Missing.tacet"), options);
+        expect(diagnostics.map(d => [d.file, d.line, d.column, d.level, d.message])).toEqual([
+            [findFixture("Missing.tacet"), 2, 6, "error", "v-if/v-else-if is missing expression."],
+            [findFixture("Missing.tacet"), 4, 6, "error", "v-if/v-else-if is missing expression."],
+            [findFixture("Missing.tacet"), 5, 6, "error", "v-for is missing expression."],
+            [findFixture("Missing.tacet"), 6, 6, "error", "v-for has invalid expression."],
         ]);
     });
 });

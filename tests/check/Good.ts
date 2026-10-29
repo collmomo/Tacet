@@ -84,3 +84,9 @@ export class GoodView {
         return this.manager.todos.some(todo => todo.isDone);
     }
 }
+
+const names: string[] = ["a", "b"];
+
+export class NamesView {
+    @live public get joined(): string { return names.join(","); }
+}

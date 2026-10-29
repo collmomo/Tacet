@@ -12,6 +12,7 @@
   <p>{{ view.stamp }}</p>
   <div ref="view.box" v-bind="attrs"></div>
   <button v-for="f in filters" :key="f" @click="view.setFilter(f)">{{ f }}</button>
+  <p>{{ filters.join(",") }}</p>
   <template v-for="(width, index) in view.manager.layout.columns" :key="index">{{ width.width }}</template>
 </template>
 

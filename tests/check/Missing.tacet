@@ -1,0 +1,11 @@
+<template>
+  <p v-if>x</p>
+  <p v-if="n > 0">y</p>
+  <p v-else-if>z</p>
+  <p v-for>w</p>
+  <p v-for="n">v</p>
+</template>
+
+<script setup lang="ts">
+  const n = 1;
+</script>
