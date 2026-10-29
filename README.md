@@ -224,6 +224,27 @@ It borrows a renderer first. The one-file layout and the template syntax stay wh
 
 It is not a store, not a state manager, not a way to organise components. The shape of your app is yours.
 
+## What it costs, measured
+
+One view holding a plain array of 1,000,000 slot objects in an unmarked field, and a template that walks it. Vue 3.5, the same view, two ways: through Tacet's marks, and wrapped the Vue way with `reactive(view)`.
+
+| | One redraw | Memory after mount | A write into the layout redraws? |
+|---|---|---|---|
+| Tacet | 35 ms | +0 MB | no |
+| `reactive(view)` | 4,964 ms | +1,009 MB | yes |
+
+The wrapped view is 140 times slower and holds a gigabyte of proxies, because Vue walks everything it can reach. Tacet walks nothing it was not told to. A template that reads only a counter costs the same either way, under a millisecond.
+
+A mark itself costs nothing to read: 13.5 nanoseconds a read, the same as a plain field. The measurements and how to run them are in RESEARCH.md.
+
+## Why it is useful
+
+- **The screen never stalls on data it does not show.** A view can hold the whole model, a grid of a million cells, a layout, a document, and the framework stays out of it. Only the marked fields cost anything.
+- **Less to write.** No refs, no computed, no watchers, no stores, no wiring between them. A class with two marks and a template that reads it.
+- **The same code runs without a screen.** A view is a plain class: a test drives it with no browser, a script drives it, a model can drive it through the same methods a button calls. In Valorum, the chat model got 490 actions from the existing methods because they were already there.
+- **Nothing to learn twice.** The template is the one you know. The class is the one you would write anyway. The marks are two words.
+- **A renderer that gets better on its own.** Tacet sits on Vue's renderer. When Vue's next renderer ships, the one without the virtual tree, a `.tacet` file runs on it unchanged, and it has been tried.
+
 ## Why
 
 Deep reactivity by default is the mistake. A framework that watches everything reachable will one day walk something enormous and you will not know why the screen stopped moving. Marking the few fields a screen reads is cheaper to write, cheaper to run, and says what you meant.
