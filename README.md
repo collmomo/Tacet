@@ -198,6 +198,25 @@ Kept, because they are the good part: the template syntax (`v-for`, `v-if`, `:cl
 
 Gone, because the view does their job: `ref`, `reactive`, `computed`, `watch`, `watchEffect`, `provide`, `inject`, stores, `emit`. A computed is a getter on the class. A watch is a method called where the change happens. A child does not emit upward, it calls a method on the view it was given.
 
+## An element of the DOM
+
+When a view needs a DOM element, the template hands it over. A `ref` can be a method of the view: the renderer calls it with the element when it is drawn and with `null` when it is removed.
+
+```html
+<canvas ref="view.attachCanvas">
+```
+
+```ts
+private canvas: HTMLCanvasElement | null = null;   // plain: never marked, never walked
+
+public attachCanvas(el: HTMLCanvasElement | null): void {
+    this.canvas = el;
+    if (el) this.draw();
+}
+```
+
+No variable in the script, no hook, nothing kept in the template. The element lives in a plain field of the view, which is the only place a DOM node should ever be.
+
 ## What Tacet is, and is not
 
 Tacet mounts a component and keeps the marked fields live. That is its whole job. It does not know what a view is.
