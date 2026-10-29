@@ -28,12 +28,11 @@ In one sentence: `@live` tracks assignment, `@deep` tracks mutation. `items.push
 
 Three rules keep the marks honest:
 
-- **A `@live` getter may read only what can be followed.** Its result is kept until something it read changes, so everything it read that can change must be able to say so. The build checks that, path by path:
-  - A hop that can change needs a mark on its own class. In `this.object.other.value`: `object` if this class can assign another one, `other` in `object`'s class if it can be replaced, `value` in `other`'s class if it moves.
-  - A hop that cannot change needs nothing: a `readonly` field, or a plain object under a `@deep` field, which is followed already. In most classes the chain is readonly down to the one field that moves, so one mark is enough.
-  - The getter may read other `@live` getters, and call what the build can see through: this class's own methods, the module's functions, an arrow function written inside it, `filter`, `trim`, `Math.round`. The build follows those bodies and checks their reads the same way.
-  - The build refuses, naming the place: a hop that can change with no mark, a hop it cannot see through (`any`, `unknown`), a call it cannot see through (a method on an interface, a function passed by reference, a library's method on an object that can change). A refusal is a build error, never a stale value on the screen.
-  - The marked reads are tracked at run time wherever they happen; the build only hunts the plain ones.
+- **A `@live` getter may read only what can be followed.** Its result is kept until something it read changes, so the build checks what it reads:
+  - A field that can change needs a mark. A `readonly` field or a plain object under `@deep` needs none.
+  - A call to this class's methods or the module's functions is followed and checked the same way.
+  - A plain field that can change, or a call the build cannot see through, is a build error naming it. Never a stale value.
+  - A getter with no mark reads anything. It can only be slower, never wrong.
 - **A class with no marks is a value.** A library's object, a Date, a range, a chart, has no surface to mark. Hold it in a marked field and replace it when it changes; the getter follows the field. Its own insides tell no one.
 - **`@deep` stops at a class.** It walks plain objects and arrays all the way down and never enters a class instance. A class always decides its own surface with its own marks, so marking one field of it never changes what its other fields do, wherever the object sits.
 
