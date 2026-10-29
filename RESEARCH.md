@@ -9,16 +9,17 @@ Everything below was checked against the projects' own code, docs and npm dates 
 Path: `/tmp/claude-0/-home-user/981683f0-6055-5711-bfbe-976687a8cc4d/scratchpad/tacet/` (a scratch folder, not in this repo).
 
 - Vue 3.5.22, Vite 7, Vitest 3, TypeScript 5.8, standard decorators (no `experimentalDecorators`).
-- `src/tacet.ts` (62 lines): `@live`, `@deep`, `@derived` and the one function both forms share, `installField`.
+- `src/tacet.ts` (60 lines): `@live` (on a field or a getter), `@deep`, and the one function both forms share, `installField`.
 - `src/tacetTags.ts` (45 lines): the comment-tag form, a Vite plugin.
+- `src/tacetRefs.ts` (24 lines): the `.tacet` template step that makes `ref="view.attachCanvas"` call the method.
 - The todo view four ways: decorators in TS, tags in TS, tags in plain JS, decorators in plain JS. One test file drives all four with no browser.
 - `src/Todo.vue` and `src/Todo.tacet`: the same component, the script one line.
-- `npm test`: 27 tests pass. `npx vue-tsc --noEmit`: clean, templates included.
-- A second copy on Vue 3.6.0-rc.13 with Vapor: `.../scratchpad/tacet-vapor/`. 23 tests pass there.
+- `npm test`: 34 tests pass. `npx vue-tsc --noEmit`: clean, templates included.
+- A second copy on Vue 3.6.0-rc.13 with Vapor: `.../scratchpad/tacet-vapor/`. 26 tests pass there.
 
 How a mark works. The decorator asks to run right after its field is defined. At that moment it reads the value, puts it in a Vue `shallowRef`, and replaces the field with a getter and a setter on the instance. The setter compares with `Object.is` and returns if nothing changed. Then it calls `markRaw` on the instance, so Vue never wraps it.
 
-The comment tag does the same at the same moment. The plugin adds a private field right after the tagged one: `#__tacet0 = __tacet.installField(this, "draft", "live");`. Fields run in order, so this runs right after `draft` is defined. A tagged getter gets a `static { }` block that wraps it once. All of this is plain ES2022: no decorator support needed anywhere.
+The comment tag does the same at the same moment. The plugin adds a private field right after the tagged one: `#__tacet0 = __tacet.installField(this, "draft", "live");`. Fields run in order, so this runs right after `draft` is defined. A tagged getter gets a `static { }` block that wraps it once in a Vue `computed`. All of this is plain ES2022: no decorator support needed anywhere.
 
 ## The numbers
 
@@ -58,7 +59,7 @@ Reading costs the same either way: the tracking is the cost. Making an instance 
 Works, each one a test:
 - One public method per action drives the view; the test needs no browser.
 - A write of the same value notifies nobody.
-- A `@derived` getter re-runs only when a marked field it read changed.
+- A `@live` getter re-runs only when a marked field it read changed.
 - `reactive(view)` returns the view itself; so does a view put inside a reactive object.
 - A write in the constructor body goes through the setter. A field that reads an earlier marked field sees its value.
 - A subclass adds its own marks.
@@ -70,8 +71,20 @@ Does not work, or needs a rule (each one a test):
 - An array under `@live`: `push` is silent. Replacing the array notifies. This is what shallow means.
 - A class with no mark inside `@deep` is walked like Vue today. Its big fields too.
 - A class with ONE mark inside `@deep` becomes raw. Its unmarked fields stop updating the screen.
-- Caching every getter is a bug: a cached getter that reads a plain field returns the old value forever. A getter with no mark is always right: it is live through the marked fields it reads, it just re-runs on each read.
+- A `@live` getter that reads a plain field returns the old value forever: the cache only knows the marked fields. A getter with no mark is always right: it is live through the marked fields it reads, it just re-runs on each read.
 - Devtools: not tried. There is no browser devtools in this box. The view is a plain object whose marked fields are getters; whether the Vue devtools panel shows their values has to be seen in a browser.
+
+## A DOM element reaching a view
+
+The decided form: `<canvas ref="view.attachCanvas">`, the method gets the element when it is drawn and `null` when it is removed. What Vue does with it, tested in `tests/functionRef.test.ts`:
+
+- `ref="view.attachCanvas"` as Vue reads it: a plain NAME, not code. The method is never called and nothing warns.
+- `:ref="view.attachCanvas"`: Vue calls the function with no `this`. It throws `TypeError` inside the method.
+- `:ref="el => view.attachCanvas(el)"`: works. The element on mount, `null` on unmount.
+- `@click="view.countClick"` keeps its `this`: Vue's compiler wraps a dotted path in an event into a call. It does not do that for `ref`.
+- Vue calls a function ref AGAIN on every redraw of its element, with the same element, even when the function is the same one. So `attachCanvas` must compare first, like every setter.
+- The one way: write `ref="view.attachCanvas"` in a `.tacet` file and let the `.tacet` step rewrite it to `:ref="el => view.attachCanvas(el)"`. That step is `src/tacetRefs.ts`, 24 lines, a template transform handed to Vue's compiler for `.tacet` files only (a second `vue()` entry with `include: /\.tacet$/`). It works: element on mount, `null` on unmount, no error.
+- One type note: Vue types a function ref's argument as `Element | ComponentPublicInstance | null`, so the method's parameter must accept that (or `unknown`).
 
 ## Decorators and the class field setting
 
@@ -155,7 +168,7 @@ How runtime-core leans on reactivity: 25 of its files import 33 runtime function
 
 ### (a) A library on Vue
 
-What the prototype is. The marks are Vue `shallowRef`s behind a getter and setter, `@deep` is `reactive()`, a cached getter is `computed()`, the instance is `markRaw`. The compiler, the renderer, the devtools hook, Transition, Suspense, slots and the editor tooling are Vue's, untouched.
+What the prototype is. The marks are Vue `shallowRef`s behind a getter and setter, `@deep` is `reactive()`, a `@live` getter is `computed()`, the instance is `markRaw`. The compiler, the renderer, the devtools hook, Transition, Suspense, slots and the editor tooling are Vue's, untouched.
 - Cost: the prototype took an afternoon; a release is about a week with docs and tests.
 - Risk: low. Six public Vue functions. It ran unchanged on 3.5 and on 3.6 Vapor.
 - What it cannot do: stop Vue from walking an UNMARKED class inside `@deep`. That stays a rule people follow.
