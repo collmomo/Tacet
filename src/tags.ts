@@ -1,14 +1,9 @@
-/**
- * The comment-tag form of the marks, for plain JavaScript and for TypeScript
- * alike: `/** @live *\/ draft = "";`. A Vite plugin reads the tags with
- * TypeScript's parser and writes the same calls the decorators make.
- */
 import ts from "typescript";
 import MagicString, {type SourceMap} from "magic-string";
 import type {Plugin} from "vite";
 
 export interface TagsOptions {
-    /** The module the inserted calls import from. Default: "tacet". */
+    /** The module the inserted calls import from. Default: "tacet/runtime". */
     runtime?: string;
 }
 
@@ -22,15 +17,14 @@ export interface TagsResult {
 const MARKS = new Set(["live", "deep"]);
 const QUICK = /@(?:live|deep)\b|\/\*\*\s*@[a-z]+\s*\*\/|\bas\s+live\b/;
 
-function scriptKind(id: string): ts.ScriptKind {
+function readScriptKind(id: string): ts.ScriptKind {
     if (/\.[cm]?tsx$/.test(id)) return ts.ScriptKind.TSX;
     if (/\.[cm]?ts$/.test(id)) return ts.ScriptKind.TS;
     if (/\.[cm]?jsx$/.test(id)) return ts.ScriptKind.JSX;
     return ts.ScriptKind.JS;
 }
 
-/** Levenshtein distance, for a mistyped tag. */
-function distance(a: string, b: string): number {
+function measureEditDistance(a: string, b: string): number {
     const row = Array.from({length: b.length + 1}, (_, i) => i);
     for (let i = 1; i <= a.length; i++) {
         let previous = row[0];
@@ -44,7 +38,7 @@ function distance(a: string, b: string): number {
     return row[b.length];
 }
 
-function memberName(member: ts.ClassElement): string | undefined {
+function readMemberName(member: ts.ClassElement): string | undefined {
     const name = member.name;
     if (name === undefined) return undefined;
     if (ts.isIdentifier(name) || ts.isStringLiteral(name) || ts.isNumericLiteral(name)) return name.text;
@@ -62,16 +56,16 @@ function hasDecoratorMark(member: ts.ClassElement): boolean {
 }
 
 /** Rewrites the tagged fields and getters of `code`; `null` when it holds no tag. */
-export function transformTags(code: string, id: string, options: TagsOptions = {}): TagsResult | null {
+export function rewriteTags(code: string, id: string, options: TagsOptions = {}): TagsResult | null {
     if (!QUICK.test(code)) return null;
-    const runtime = options.runtime ?? "tacet";
-    const source = ts.createSourceFile(id, code, ts.ScriptTarget.Latest, true, scriptKind(id));
+    const runtime = options.runtime ?? "tacet/runtime";
+    const source = ts.createSourceFile(id, code, ts.ScriptTarget.Latest, true, readScriptKind(id));
     const edit = new MagicString(code);
     const warnings: string[] = [];
     const errors: string[] = [];
     let touched = false;
 
-    const where = (node: ts.Node): string => {
+    const formatPosition = (node: ts.Node): string => {
         const {line} = source.getLineAndCharacterOfPosition(node.getStart(source));
         return `${id}:${line + 1}`;
     };
@@ -84,30 +78,30 @@ export function transformTags(code: string, id: string, options: TagsOptions = {
             for (const tag of ts.getJSDocTags(member)) {
                 const name = tag.tagName.text;
                 if (MARKS.has(name)) mark = name;
-                else if (name.length >= 3 && Math.min(distance(name, "live"), distance(name, "deep")) <= 2) {
-                    warnings.push(`${where(member)}: "@${name}" is not a Tacet mark. Did you mean @live or @deep? The field stays plain.`);
+                else if (name.length >= 3 && Math.min(measureEditDistance(name, "live"), measureEditDistance(name, "deep")) <= 2) {
+                    warnings.push(`${formatPosition(member)}: "@${name}" is not a Tacet mark. Did you mean @live or @deep? The field stays plain.`);
                 }
             }
             if (mark === undefined) continue;
             if (hasDecoratorMark(member)) continue;
-            const name = memberName(member);
+            const name = readMemberName(member);
             const isStatic = ts.canHaveModifiers(member) && (ts.getModifiers(member) ?? []).some(m => m.kind === ts.SyntaxKind.StaticKeyword);
             if (ts.isMethodDeclaration(member)) {
-                errors.push(`${where(member)}: a method never needs a mark ("${name ?? "?"}").`);
+                errors.push(`${formatPosition(member)}: a method never needs a mark ("${name ?? "?"}").`);
             } else if (ts.isPropertyDeclaration(member)) {
-                if (name === undefined) errors.push(`${where(member)}: @${mark} needs a field with a plain name.`);
-                else if (isStatic) errors.push(`${where(member)}: a static field cannot be marked ("${name}").`);
+                if (name === undefined) errors.push(`${formatPosition(member)}: @${mark} needs a field with a plain name.`);
+                else if (isStatic) errors.push(`${formatPosition(member)}: a static field cannot be marked ("${name}").`);
                 else {
                     edit.appendRight(member.end, ` #__tacet${fields++} = __tacet.installField(this, ${JSON.stringify(name)}, ${JSON.stringify(mark)});`);
                     touched = true;
                 }
             } else if (ts.isGetAccessorDeclaration(member)) {
-                if (mark === "deep") errors.push(`${where(member)}: a getter takes @live, not @deep ("${name ?? "?"}").`);
-                else if (name === undefined) errors.push(`${where(member)}: @live needs a getter with a plain name.`);
-                else if (isStatic) errors.push(`${where(member)}: a static getter cannot be marked ("${name}").`);
+                if (mark === "deep") errors.push(`${formatPosition(member)}: a getter takes @live, not @deep ("${name ?? "?"}").`);
+                else if (name === undefined) errors.push(`${formatPosition(member)}: @live needs a getter with a plain name.`);
+                else if (isStatic) errors.push(`${formatPosition(member)}: a static getter cannot be marked ("${name}").`);
                 else getters.push(name);
             } else if (ts.isSetAccessorDeclaration(member)) {
-                errors.push(`${where(member)}: the mark goes on the getter, not the setter ("${name ?? "?"}").`);
+                errors.push(`${formatPosition(member)}: the mark goes on the getter, not the setter ("${name ?? "?"}").`);
             }
         }
         if (getters.length > 0) {
@@ -122,10 +116,10 @@ export function transformTags(code: string, id: string, options: TagsOptions = {
         if (!ts.isTypeReferenceNode(node.type) || !ts.isIdentifier(node.type.typeName) || node.type.typeName.text !== "live") return;
         const inner = node.expression;
         if (!ts.isPropertyAccessExpression(inner) || ts.isPrivateIdentifier(inner.name)) {
-            errors.push(`${where(node)}: \`as live\` goes on a property read, \`object.property as live\`.`);
+            errors.push(`${formatPosition(node)}: \`as live\` goes on a property read, \`object.property as live\`.`);
             return;
         }
-        edit.overwrite(node.getStart(source), node.end, `__tacet.watch(${inner.expression.getText(source)}, ${JSON.stringify(inner.name.text)})`);
+        edit.overwrite(node.getStart(source), node.end, `__tacet.watchProperty(${inner.expression.getText(source)}, ${JSON.stringify(inner.name.text)})`);
         touched = true;
     };
 
@@ -151,7 +145,7 @@ export function tacetTags(options: TagsOptions = {}): Plugin {
         transform(code, id) {
             const file = id.split("?")[0];
             if (!SCRIPT_FILE.test(file) || file.includes("/node_modules/")) return null;
-            const result = transformTags(code, file, options);
+            const result = rewriteTags(code, file, options);
             if (result === null) return null;
             for (const warning of result.warnings) this.warn(warning);
             if (result.errors.length > 0) this.error(result.errors.join("\n"));

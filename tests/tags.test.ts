@@ -1,26 +1,26 @@
 import {describe, expect, it} from "vitest";
 import {isReactive, reactive} from "vue";
-import {transformTags} from "../src/tags";
+import {rewriteTags} from "../src/tags";
 import {follow} from "./helpers";
 import * as js from "./fixtures/TodoViewTags.js";
 import * as ts from "./fixtures/TodoViewTags";
 
 describe("the comment tags, rewritten", () => {
     it("inserts the field call right after the tagged field and a static block for the getter", () => {
-        const result = transformTags(`class V {\n  /** @live */ draft = "";\n  /** @deep */ rows = [];\n  plain = 1;\n  /** @live */ get total() { return 1; }\n}`, "/v.js");
+        const result = rewriteTags(`class V {\n  /** @live */ draft = "";\n  /** @deep */ rows = [];\n  plain = 1;\n  /** @live */ get total() { return 1; }\n}`, "/v.js");
         expect(result?.errors).toEqual([]);
         expect(result?.code).toBe(
-            `import * as __tacet from "tacet";\nclass V {\n  /** @live */ draft = ""; #__tacet0 = __tacet.installField(this, "draft", "live");\n  /** @deep */ rows = []; #__tacet1 = __tacet.installField(this, "rows", "deep");\n  plain = 1;\n  /** @live */ get total() { return 1; } static { __tacet.installGetter(this.prototype, "total"); }\n}`,
+            `import * as __tacet from "tacet/runtime";\nclass V {\n  /** @live */ draft = ""; #__tacet0 = __tacet.installField(this, "draft", "live");\n  /** @deep */ rows = []; #__tacet1 = __tacet.installField(this, "rows", "deep");\n  plain = 1;\n  /** @live */ get total() { return 1; } static { __tacet.installGetter(this.prototype, "total"); }\n}`,
         );
     });
 
     it("leaves a file with no tag alone, fast", () => {
-        expect(transformTags(`class V { draft = ""; }`, "/v.ts")).toBeNull();
-        expect(transformTags(`/** The view. */ class V { /** The draft. */ draft = ""; }`, "/v.ts")).toBeNull();
+        expect(rewriteTags(`class V { draft = ""; }`, "/v.ts")).toBeNull();
+        expect(rewriteTags(`/** The view. */ class V { /** The draft. */ draft = ""; }`, "/v.ts")).toBeNull();
     });
 
     it("warns on a mistyped tag", () => {
-        const result = transformTags(`class V {\n  /** @lvie */ draft = "";\n  /** @deeep */ rows = [];\n  /** @live */ ok = 1;\n}`, "/v.ts");
+        const result = rewriteTags(`class V {\n  /** @lvie */ draft = "";\n  /** @deeep */ rows = [];\n  /** @live */ ok = 1;\n}`, "/v.ts");
         expect(result?.warnings).toEqual([
             `/v.ts:2: "@lvie" is not a Tacet mark. Did you mean @live or @deep? The field stays plain.`,
             `/v.ts:3: "@deeep" is not a Tacet mark. Did you mean @live or @deep? The field stays plain.`,
@@ -28,7 +28,7 @@ describe("the comment tags, rewritten", () => {
     });
 
     it("refuses a mark on a method, a setter, a static field and a @deep getter", () => {
-        const result = transformTags(`class V {\n  /** @live */ go() {}\n  /** @live */ set x(v) {}\n  /** @live */ static n = 1;\n  /** @deep */ get rows() { return []; }\n}`, "/v.ts");
+        const result = rewriteTags(`class V {\n  /** @live */ go() {}\n  /** @live */ set x(v) {}\n  /** @live */ static n = 1;\n  /** @deep */ get rows() { return []; }\n}`, "/v.ts");
         expect(result?.errors).toEqual([
             `/v.ts:2: a method never needs a mark ("go").`,
             `/v.ts:3: the mark goes on the getter, not the setter ("x").`,
@@ -38,13 +38,13 @@ describe("the comment tags, rewritten", () => {
     });
 
     it("lets a decorator win over a tag on the same field", () => {
-        const result = transformTags(`class V {\n  /** @live */ @live draft = "";\n  /** @deep */ rows = [];\n}`, "/v.ts");
+        const result = rewriteTags(`class V {\n  /** @live */ @live draft = "";\n  /** @deep */ rows = [];\n}`, "/v.ts");
         expect(result?.code).not.toContain(`"draft"`);
         expect(result?.code).toContain(`"rows"`);
     });
 
     it("handles a class expression and a string-named field", () => {
-        const result = transformTags(`const V = class {\n  /** @live */ "my-field" = 1;\n};`, "/v.js");
+        const result = rewriteTags(`const V = class {\n  /** @live */ "my-field" = 1;\n};`, "/v.js");
         expect(result?.code).toContain(`__tacet.installField(this, "my-field", "live")`);
     });
 });

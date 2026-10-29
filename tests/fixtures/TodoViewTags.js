@@ -39,10 +39,7 @@ export class TodoView {
         this.manager = manager;
     }
 
-    /**
-     * The rows the filter keeps.
-     * @live
-     */
+    /** The rows the filter keeps. @live */
     get shownTodos() {
         this.getterRuns++;
         if (this.filter === "all") return this.manager.todos;

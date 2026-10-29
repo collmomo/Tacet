@@ -4,7 +4,12 @@ import {tacet} from "./src/vite";
 
 export default defineConfig({
     root: "example",
-    resolve: {alias: {tacet: fileURLToPath(new URL("./src/index.ts", import.meta.url))}},
+    resolve: {
+        alias: [
+            {find: /^tacet\/runtime$/, replacement: fileURLToPath(new URL("./src/runtime.ts", import.meta.url))},
+            {find: /^tacet$/, replacement: fileURLToPath(new URL("./src/index.ts", import.meta.url))},
+        ],
+    },
     plugins: tacet(),
     test: {
         root: ".",

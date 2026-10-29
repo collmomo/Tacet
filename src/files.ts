@@ -1,14 +1,9 @@
-/**
- * A `.tacet` file is a `.vue` file with two things done for it: the script is
- * a `<script setup>` so the template sees its names, and `ref="view.box"`
- * hands the element to a field of the view.
- */
 import {parse} from "vue/compiler-sfc";
 import MagicString, {type SourceMap} from "magic-string";
 import type {Plugin} from "vite";
 
 export interface FilesOptions {
-    /** The module `setRef` is imported from. Default: "tacet". */
+    /** The module `assignElement` is imported from. Default: "tacet/runtime". */
     runtime?: string;
 }
 
@@ -21,8 +16,8 @@ export interface FilesResult {
 const REF_ATTRIBUTE = /(^|\s)ref\s*=\s*(["'])([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+)\2/g;
 
 /** Rewrites one `.tacet` file; `null` when nothing needed doing. */
-export function transformTacetFile(code: string, id: string, options: FilesOptions = {}): FilesResult | null {
-    const runtime = options.runtime ?? "tacet";
+export function rewriteTacetFile(code: string, id: string, options: FilesOptions = {}): FilesResult | null {
+    const runtime = options.runtime ?? "tacet/runtime";
     const {descriptor, errors} = parse(code, {filename: id});
     if (errors.length > 0) return null;
     const edit = new MagicString(code);
@@ -55,7 +50,7 @@ export function transformTacetFile(code: string, id: string, options: FilesOptio
                 touched = true;
             }
         }
-        if (refs > 0) edit.appendLeft(script.loc.start.offset, `\nimport {setRef as __tacetRef} from ${JSON.stringify(runtime)};\n`);
+        if (refs > 0) edit.appendLeft(script.loc.start.offset, `\nimport {assignElement as __tacetRef} from ${JSON.stringify(runtime)};\n`);
     } else if (refs > 0) {
         warnings.push(`${id}: ref="view.box" needs a <script> block that holds \`view\`.`);
     }
@@ -71,7 +66,7 @@ export function tacetFiles(options: FilesOptions = {}): Plugin {
         enforce: "pre",
         transform(code, id) {
             if (!/\.tacet$/.test(id)) return null;
-            const result = transformTacetFile(code, id, options);
+            const result = rewriteTacetFile(code, id, options);
             if (result === null) return null;
             for (const warning of result.warnings) this.warn(warning);
             return {code: result.code, map: result.map};

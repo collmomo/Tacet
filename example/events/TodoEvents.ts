@@ -1,10 +1,6 @@
 import type {TodoFilter, TodoView} from "../views/TodoView";
 
-/**
- * The screen's events, held by the view as `view.events` and handled apart
- * from its state: each one turned into a call on the view or its manager.
- * A convention of this app, not of Tacet: a template may call the view directly.
- */
+/** The screen's events, held by the view as `view.events`: each one turned into a call on the view or its manager. */
 export class TodoEvents {
     private readonly view: TodoView;
 

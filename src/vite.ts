@@ -1,7 +1,3 @@
-/**
- * `tacet()` in a Vite config: the comment tags, the `.tacet` files, and Vue's
- * own plugin for them. Add `vue()` yourself for `.vue` files, if you have any.
- */
 import vue, {type Options as VueOptions} from "@vitejs/plugin-vue";
 import type {Plugin, ResolvedConfig} from "vite";
 import {tacetTags, type TagsOptions} from "./tags.js";
@@ -19,7 +15,7 @@ export interface TacetOptions extends TagsOptions, FilesOptions {
 export function tacetCheck(options: CheckOptions = {}): Plugin {
     let config: ResolvedConfig;
     let checker: Checker;
-    const run = (fail: (message: string) => never): void => {
+    const runCheck = (fail: (message: string) => never): void => {
         checker ??= new Checker({...options, root: options.root ?? config.root});
         const started = performance.now();
         const diagnostics = checker.check();
@@ -38,10 +34,10 @@ export function tacetCheck(options: CheckOptions = {}): Plugin {
         configResolved(resolved) { config = resolved; },
         buildStart() {
             if (config.mode === "test" || process.env.VITEST !== undefined) return;
-            run(message => this.error(message));
+            runCheck(message => this.error(message));
         },
         handleHotUpdate({file}) {
-            if (/\.(?:[cm]?[jt]sx?|tacet)$/.test(file)) run(message => { throw new Error(message); });
+            if (/\.(?:[cm]?[jt]sx?|tacet)$/.test(file)) runCheck(message => { throw new Error(message); });
         },
     };
 }
@@ -52,11 +48,6 @@ export function tacet(options: TacetOptions = {}): Plugin[] {
         tacetFiles(options),
         ...(options.check === false ? [] : [tacetCheck(typeof options.check === "object" ? options.check : {})]),
         vue({...options.vue, include: /\.tacet$/}),
-        {
-            name: "tacet:decorators-in-js",
-            // esbuild skips .js files; decorators in plain JavaScript need it to look.
-            config: () => ({esbuild: {include: /\.(m?[jt]sx?)$/, exclude: [], target: "es2022"}}),
-        },
     ];
 }
 

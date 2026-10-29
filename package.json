@@ -11,6 +11,10 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
+    "./runtime": {
+      "types": "./dist/runtime.d.ts",
+      "import": "./dist/runtime.js"
+    },
     "./vite": {
       "types": "./dist/vite.d.ts",
       "import": "./dist/vite.js"
@@ -21,7 +25,7 @@
     "build": "vite build",
     "test": "vitest run",
     "check": "vue-tsc --noEmit",
-    "bench": "BENCH=1 NODE_OPTIONS=\"--expose-gc --max-old-space-size=12288\" vitest run --dir bench --pool=forks",
+    "bench": "BENCH=1 NODE_OPTIONS=\"--expose-gc --max-old-space-size=12288\" vitest run bench --pool=forks --no-file-parallelism",
     "build:lib": "tsc -p tsconfig.lib.json",
     "prepack": "npm run build:lib"
   },

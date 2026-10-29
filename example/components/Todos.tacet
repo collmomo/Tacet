@@ -15,7 +15,7 @@
   import {TodoManager} from "../managers/TodoManager";
 
   const view = new TodoView(new TodoManager());
-  const filters: readonly TodoFilter[] = ["all", "open", "done"];
+  const filters: TodoFilter[] = ["all", "open", "done"];
 </script>
 
 <style>
