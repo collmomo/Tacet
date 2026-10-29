@@ -29,9 +29,21 @@ describe("a .tacet file, rewritten", () => {
         expect(result?.code).toContain(`<script setup>\nimport {assignElement as __tacetRef} from "tacet/runtime";`);
     });
 
-    it("warns when a ref names a view but there is no script", () => {
-        const result = rewriteTacetFile(`<template><p ref="view.x"></p></template>`, "/a.tacet");
-        expect(result?.warnings).toEqual([`/a.tacet: ref="view.box" needs a <script> block that holds \`view\`.`]);
+    it("warns, naming what it found, and leaves the template alone when there is no script", () => {
+        const code = `<template>\n  <p ref="view.x"></p>\n  <b ref='view.manager.y'></b>\n  <li v-for="row in view.rows"></li>\n</template>`;
+        const result = rewriteTacetFile(code, "/a.tacet");
+        expect(result?.warnings).toEqual([
+            `/a.tacet: ref="view.x" needs a <script> block that holds \`view\`; the template was left as written.`,
+            `/a.tacet: ref='view.manager.y' needs a <script> block that holds \`view.manager\`; the template was left as written.`,
+            `/a.tacet: v-for="row in view.rows" needs a <script> block, where Tacet puts its import; the template was left as written.`,
+        ]);
+        expect(result?.code).toBe(code);
+    });
+
+    it("leaves a comment, a text and a <pre> alone, and rewrites the attribute next to them", () => {
+        const result = rewriteTacetFile(`<template>\n  <!-- ref="a.b" -->\n  <code>ref="view.box"</code>\n  <pre>v-for="x in y"</pre>\n  <template v-if="view.on"><div ref="view.box" v-for="x in view.rows"></div></template>\n</template>\n<script setup>\nconst view = {};\n</script>`, "/a.tacet");
+        expect(result?.code).toBe(`<template>\n  <!-- ref="a.b" -->\n  <code>ref="view.box"</code>\n  <pre>v-for="x in y"</pre>\n  <template v-if="view.on"><div :ref="__tacetRef(view, 'box')" v-for="x in __tacetEach(view.rows)"></div></template>\n</template>\n<script setup>\nimport {assignElement as __tacetRef, readItems as __tacetEach} from "tacet/runtime";\n\nconst view = {};\n</script>`);
+        expect(result?.warnings).toEqual([]);
     });
 });
 

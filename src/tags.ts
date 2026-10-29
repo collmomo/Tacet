@@ -46,6 +46,12 @@ function readMemberName(member: ts.ClassElement): string | undefined {
     return undefined;
 }
 
+// A field written without a semicolon needs one before the element inserted on its line; a body's `}` does not, but a field's `x = () => {}` still does.
+function readSeparator(code: string, member: ts.ClassElement): string {
+    const last = code[member.end - 1];
+    if (last === ";" || (last === "}" && !ts.isPropertyDeclaration(member))) return "";
+    return ";";
+}
 
 /** Rewrites the tagged fields and getters of `code`; `null` when it holds no tag. */
 export function rewriteTags(code: string, id: string, options: TagsOptions = {}): TagsResult | null {
@@ -84,7 +90,7 @@ export function rewriteTags(code: string, id: string, options: TagsOptions = {})
                 if (name === undefined) errors.push(`${formatPosition(member)}: @${mark} needs a field with a plain name.`);
                 else if (isStatic) errors.push(`${formatPosition(member)}: a static field cannot be marked ("${name}").`);
                 else {
-                    edit.appendRight(member.end, ` #__tacet${fields++} = __tacet.installField(this, ${JSON.stringify(name)}, ${JSON.stringify(mark)});`);
+                    edit.appendRight(member.end, `${readSeparator(code, member)} #__tacet${fields++} = __tacet.installField(this, ${JSON.stringify(name)}, ${JSON.stringify(mark)});`);
                     touched = true;
                 }
             } else if (ts.isGetAccessorDeclaration(member)) {
@@ -99,7 +105,7 @@ export function rewriteTags(code: string, id: string, options: TagsOptions = {})
         if (getters.length > 0) {
             const calls = getters.map(name => `__tacet.installGetter(this.prototype, ${JSON.stringify(name)});`).join(" ");
             const last = node.members[node.members.length - 1];
-            edit.appendRight(last.end, ` static { ${calls} }`);
+            edit.appendRight(last.end, `${readSeparator(code, last)} static { ${calls} }`);
             touched = true;
         }
     };

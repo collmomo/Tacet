@@ -1,5 +1,6 @@
 import {describe, expect, it} from "vitest";
 import {isReactive, reactive} from "vue";
+import typescript from "typescript";
 import {rewriteTags} from "../src/tags";
 import {follow} from "./helpers";
 import * as js from "./fixtures/TodoViewTags.js";
@@ -12,6 +13,21 @@ describe("the comment tags, rewritten", () => {
         expect(result?.code).toBe(
             `import * as __tacet from "tacet/runtime";\nclass V {\n  /** @live */ draft = ""; #__tacet0 = __tacet.installField(this, "draft", "live");\n  /** @deep */ rows = []; #__tacet1 = __tacet.installField(this, "rows", "deep");\n  plain = 1;\n  /** @live */ get total() { return 1; } static { __tacet.installGetter(this.prototype, "total"); }\n}`,
         );
+    });
+
+    it("separates the inserted field and static block from a class written without semicolons", () => {
+        const result = rewriteTags(`class V {\n  /** @live */ draft = ""\n  plain = 1\n  /** @live */ get t() { return 1 }\n}\nclass W {\n  /** @live */ get t() { return 1 }\n  go = () => {}\n}`, "/v.js");
+        expect(result?.errors).toEqual([]);
+        expect(result?.code).toContain(`draft = ""; #__tacet0 = __tacet.installField(this, "draft", "live");`);
+        expect(result?.code).toContain(`get t() { return 1 } static { __tacet.installGetter(this.prototype, "t"); }`);
+        expect(result?.code).toContain(`go = () => {}; static { __tacet.installGetter(this.prototype, "t"); }`);
+        expect(typescript.transpileModule(result!.code, {reportDiagnostics: true, compilerOptions: {target: typescript.ScriptTarget.ES2022}}).diagnostics).toEqual([]);
+    });
+
+    it("keeps a class written with semicolons parseable, with no second semicolon", () => {
+        const result = rewriteTags(`class V {\n  /** @live */ draft = "";\n  /** @live */ get t() { return 1; }\n  plain = 1;\n}`, "/v.ts");
+        expect(result?.code).toBe(`import * as __tacet from "tacet/runtime";\nclass V {\n  /** @live */ draft = ""; #__tacet0 = __tacet.installField(this, "draft", "live");\n  /** @live */ get t() { return 1; }\n  plain = 1; static { __tacet.installGetter(this.prototype, "t"); }\n}`);
+        expect(typescript.transpileModule(result!.code, {reportDiagnostics: true, compilerOptions: {target: typescript.ScriptTarget.ES2022}}).diagnostics).toEqual([]);
     });
 
     it("leaves a file with no tag alone, fast", () => {
