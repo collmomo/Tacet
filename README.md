@@ -192,6 +192,12 @@ export class TodoView {
 
 What is not there: refs, computed, watch, stores, emits, a base class, a call to make things live, a place to register views. The template reads the view and calls it. The view is a class you can use from a test, from a script, or from anything else.
 
+## What stays from Vue, and what goes
+
+Kept, because they are the good part: the template syntax (`v-for`, `v-if`, `:class`, `@click`, `:key`, slots), props as the way a parent hands a component what it needs (a view, an object), and the lifecycle hooks (`onMounted` and its family) for the component that must act when it is drawn or removed.
+
+Gone, because the view does their job: `ref`, `reactive`, `computed`, `watch`, `watchEffect`, `provide`, `inject`, stores, `emit`. A computed is a getter on the class. A watch is a method called where the change happens. A child does not emit upward, it calls a method on the view it was given.
+
 ## What Tacet is, and is not
 
 Tacet mounts a component and keeps the marked fields live. That is its whole job. It does not know what a view is.
