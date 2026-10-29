@@ -19,6 +19,8 @@
 - `@deep` stops at a class instance: it walks plain objects and arrays, never enters a class; a class's surface is its own marks only, so one mark never changes another field's behaviour (the owner, 2026-10-30).
 - A `@live` getter that reads an unmarked field keeping its old value "by design" is withdrawn: it is the build error above.
 
+- A class with no marks at all (a library's: a Date, a DateRange, a chart) is a VALUE: it is held in a marked field and replaced when it changes; a path into it ends at that field (a leaf for the getter check); its own mutations tell no one. A library's plain containers (Map, Set, array) under `@deep` are tracked like plain data. A library object that changes itself (a socket, a chart instance) lives in a plain field and the view copies what the screen needs into marked fields when it calls back (the owner, 2026-10-30).
+
 ## Open
 
 1. **A class loaded with no build.** Tags: plain fields, the screen never updates, no error. Decorators: `SyntaxError`. Decide whether the silent case needs a check (for example, the mount warns when a view has no marked field).
