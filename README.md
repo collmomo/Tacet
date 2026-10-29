@@ -22,13 +22,18 @@ Two marks. That is the whole surface on a class.
 
 No mark: plain. The framework never touches it.
 
-`@live` on a getter: the result is kept until one of the live fields it read changes. A getter with no mark is a plain getter and runs on every read. A method never needs a mark.
+`@live` on a getter: the result is kept until something it read changes. A getter with no mark is a plain getter and runs on every read; it can be slower, never wrong. A method never needs a mark.
 
 In one sentence: `@live` tracks assignment, `@deep` tracks mutation. `items.push(x)` under `@live` tells no one; `items = [...items, x]` does. Under `@deep`, the push is enough.
 
 Three rules keep the marks honest:
 
-- **A `@live` getter may read only what can be followed.** The cache is refreshed when something it read changes, so everything it read that can change must be able to say so. The build checks each path the getter reads, hop by hop: a hop that can change needs a mark, on its own class (`this.object.other.value`: `other` marked in `object`'s class if `object` can swap it, `value` marked in `other`'s class if it moves). A hop that cannot change needs nothing: a `readonly` field, assigned once and never again, or a plain object under a `@deep` field, which is followed already. In most classes the chain is readonly down to the one field that moves, so one mark is enough. A hop that can change and carries no mark would leave the getter stale, so the build refuses with the hop's name; so does a hop it cannot see through, typed `any` or `unknown`. The getter may read other `@live` getters and call what the build can see through: its own class's methods, the functions of its module, an arrow function written inside it, `filter`, `trim`, `Math.round`; the build follows those bodies and checks their reads the same way. What it cannot see through is refused with the call's name: a method on an interface, a function passed by reference, a library's method on an object that can change. The marked reads themselves are tracked at run time wherever they happen; the build only hunts the plain ones. A getter with no mark reads anything and is never a build problem: it can only be slower, never wrong.
+- **A `@live` getter may read only what can be followed.** Its result is kept until something it read changes, so everything it read that can change must be able to say so. The build checks that, path by path:
+  - A hop that can change needs a mark on its own class. In `this.object.other.value`: `object` if this class can assign another one, `other` in `object`'s class if it can be replaced, `value` in `other`'s class if it moves.
+  - A hop that cannot change needs nothing: a `readonly` field, or a plain object under a `@deep` field, which is followed already. In most classes the chain is readonly down to the one field that moves, so one mark is enough.
+  - The getter may read other `@live` getters, and call what the build can see through: this class's own methods, the module's functions, an arrow function written inside it, `filter`, `trim`, `Math.round`. The build follows those bodies and checks their reads the same way.
+  - The build refuses, naming the place: a hop that can change with no mark, a hop it cannot see through (`any`, `unknown`), a call it cannot see through (a method on an interface, a function passed by reference, a library's method on an object that can change). A refusal is a build error, never a stale value on the screen.
+  - The marked reads are tracked at run time wherever they happen; the build only hunts the plain ones.
 - **A class with no marks is a value.** A library's object, a Date, a range, a chart, has no surface to mark. Hold it in a marked field and replace it when it changes; the getter follows the field. Its own insides tell no one.
 - **`@deep` stops at a class.** It walks plain objects and arrays all the way down and never enters a class instance. A class always decides its own surface with its own marks, so marking one field of it never changes what its other fields do, wherever the object sits.
 
@@ -44,7 +49,7 @@ Tacet is written for TypeScript and works in plain JavaScript. In JavaScript the
 - **entities**: a thing with its fields and what it can do to itself. A `Todo`.
 - **managers**: holds many of them, keeps and reads them, the rules across them. A `TodoStorage`.
 - **views**: what one screen needs. One public method per user action. The marked fields. A `TodoView`.
-- **components**: the one-file pages and pieces, `.tacet` files. Template, script, style together. The script is a line or two.
+- **components**: the one-file pages and pieces, `.tacet` files. Template, script, style together. The script is the imports and the view, nothing else.
 
 A view can hold another view, an entity or a manager, and read its marked fields through it. Where shared state lives is your design: a third view, composition, inheritance. The framework stays out of it.
 
@@ -69,8 +74,8 @@ export class Todo {
     @live public text: string;
     @live public isDone = false;
 
-    constructor(text: string) {
-        this.id = crypto.randomUUID();
+    constructor(text: string, id = crypto.randomUUID()) {
+        this.id = id;
         this.text = text;
     }
 
@@ -86,7 +91,11 @@ export class TodoStorage {
 
     public readTodos(): Todo[] {
         const rows: {id: string; text: string; isDone: boolean}[] = JSON.parse(localStorage.getItem(TodoStorage.KEY) ?? "[]");
-        return rows.map(row => Object.assign(new Todo(row.text), row));
+        return rows.map(row => {
+            const todo = new Todo(row.text, row.id);
+            todo.isDone = row.isDone;
+            return todo;
+        });
     }
 
     public writeTodos(todos: Todo[]): void {
@@ -161,6 +170,9 @@ export class TodoView {
 </template>
 
 <script lang="ts">
+  import {TodoView, type TodoFilter} from "../views/TodoView";
+  import {TodoStorage} from "../managers/TodoStorage";
+
   const view = new TodoView(new TodoStorage());
   const filters: TodoFilter[] = ["all", "open", "done"];
 </script>
