@@ -131,6 +131,23 @@ const collectionHandler: ProxyHandler<object> = {
 // The marks on a field and on a getter.
 // ---------------------------------------------------------------------------
 
+const SKIP = "__v_skip";
+
+/**
+ * Vue never wraps an object whose `__v_skip` is true, and it reads the flag
+ * through the prototype chain. One flag on the class's prototype marks every
+ * instance raw for the price of one property lookup, where `markRaw` would
+ * define a property on each instance.
+ */
+function markClassRaw(instance: object): void {
+    const proto = Object.getPrototypeOf(instance) as object | null;
+    if (proto === null || proto === Object.prototype) {
+        markRaw(instance);
+        return;
+    }
+    if (!(SKIP in proto)) Object.defineProperty(proto, SKIP, {value: true, configurable: true});
+}
+
 /**
  * Replaces the field `name` of `target` with a getter and a setter. The setter
  * compares first: a value that has not changed is never written. Under `deep`
@@ -149,7 +166,7 @@ export function installField(target: object, name: PropertyKey, mark: Mark): voi
         enumerable: true,
         configurable: true,
     });
-    markRaw(target);
+    markClassRaw(target);
 }
 
 function cachedGetter<This extends object, V>(original: (this: This) => V): (this: This) => V {
@@ -198,22 +215,21 @@ function decorate(mark: Mark, value: unknown, context: DecoratorContext): unknow
             if (mark === "deep") throw new Error(`Tacet: a getter takes @live, not @deep ("${String(name)}").`);
             return cachedGetter(value as (this: object) => unknown);
         case "accessor": {
-            // The `accessor` keyword: the getter and the setter sit on the prototype,
-            // so making an instance costs nothing per marked field.
+            // The `accessor` keyword: the getter and the setter sit on the prototype, and
+            // the accessor's own private slot holds the ref, so an instance costs one ref.
             const wrap = mark === "deep" ? toDeep : <T>(v: T): T => v;
-            const holders = new WeakMap<object, {value: unknown}>();
+            const slot = value as ClassAccessorDecoratorTarget<object, {value: unknown}>;
             const result: ClassAccessorDecoratorResult<object, unknown> = {
-                get() { return holders.get(this)!.value; },
+                get() { return slot.get.call(this).value; },
                 set(next) {
-                    const holder = holders.get(this)!;
+                    const holder = slot.get.call(this);
                     const wrapped = wrap(next);
                     if (Object.is(wrapped, holder.value)) return;
                     holder.value = wrapped;
                 },
                 init(initial) {
-                    holders.set(this, shallowRef(wrap(initial)));
-                    markRaw(this);
-                    return initial;
+                    markClassRaw(this);
+                    return shallowRef(wrap(initial));
                 },
             };
             return result;

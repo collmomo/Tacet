@@ -35,7 +35,8 @@
     "tests",
     "example",
     "env.d.ts",
-    "vite.config.ts"
+    "vite.config.ts",
+    "bench"
   ],
   "exclude": [
     "tests/check"

@@ -4,6 +4,39 @@ Two questions, asked on 2026-10-29. Does this exist already? And what do we draw
 
 Everything below was checked against the projects' own code, docs and npm dates on that day. Where a claim comes from a run, the run is in the prototype.
 
+## The implementation, measured (2026-10-29, later the same day)
+
+The repo now holds the implementation; the prototype below is gone with its scratch folder. What was re-run on it, on this machine (Node 22.22, Vue 3.5.44, jsdom):
+
+**The redraw cost** (`npm run bench`, `bench/redraw.test.ts`, a million slots, median of ten):
+
+| Template | Arm | Mount | One redraw | Heap after mount | A write into the layout redraws? |
+|---|---|---|---|---|---|
+| reads the count | Tacet | 4.5 ms | 0.17 ms | +0 MB | no |
+| reads the count | reactive(view) | 1.3 ms | 0.05 ms | +0 MB | no |
+| walks the layout | Tacet | 19 ms | 1.9 to 2.2 ms | +0 MB | no |
+| walks the layout | reactive(view) | 1,280 to 1,330 ms | 1,060 to 1,170 ms | +446 MB | yes |
+
+Faster than the prototype's machine on both arms, and the gap wider: five hundred times. The wrapped arm needs about 5 GB of heap at a million slots, more than Node's default; `npm run bench` sets 12 GB. The count-only arms are the same story as before: nothing is walked, nothing costs.
+
+**The price of a mark** (`bench/read.ts`, 20 million reads, 200,000 instances):
+
+| | One read | Making one instance |
+|---|---|---|
+| plain field | 1 to 3 ns (noisy) | 0.01 µs |
+| `@live` decorator (getter on the instance) | 9 ns | 0.5 to 0.8 µs |
+| `/** @live */` tag (the same getter) | 9 ns | 0.5 µs |
+| `@live accessor` (getter on the prototype) | 16 ns | 0.35 µs |
+| a Vue `shallowRef` alone | | 0.02 µs |
+
+So the ref is not the cost of an instance; `Object.defineProperty` on the instance is, and esbuild's decorator helpers add a little on top of the tag. The `accessor` form saves less than hoped here (0.35 µs against 0.5), reads a little slower through the two-step getter, and is not seen by `JSON.stringify` or `Object.keys`. The instance form stays the default.
+
+**Vue 3.6.0-rc.13.** The whole suite, 40 tests, passes unchanged with the rc installed in a copy, the new `@deep` proxy over `shallowReactive` included. A `.tacet` file with `<script setup lang="ts" vapor>` mounted through `createVaporApp` reads the view, follows its marks and hands the element to the field; in the rc, Vapor is only in the `vue.runtime-with-vapor` browser bundle, so that test aliases `vue` to it, and under that alias the two `@vue/test-utils` mounts of the suite fail with a second copy of Vue (not Tacet's doing).
+
+**A browser.** The todo app in `example/`, served by `vite dev`, driven by Playwright in Chromium: add, toggle, filter, remove, reload with the localStorage rows back, the draft cleared, no console errors or warnings.
+
+**The check in dev.** The first run builds a TypeScript program (about 0.3 s on this repo, 2 s on the test fixtures with the DOM lib); a `Checker` keeps the program and its parsed files between runs, so a change costs a fraction of that.
+
 ## The prototype
 
 Path: `/tmp/claude-0/-home-user/981683f0-6055-5711-bfbe-976687a8cc4d/scratchpad/tacet/` (a scratch folder, not in this repo).

@@ -37,7 +37,9 @@
 - The tag plugin's parser (open item 6): TypeScript's, which the check needs anyway.
 - A mistyped tag (open item 7): the plugin warns on a doc-comment tag within two letters of `live` or `deep`.
 - The getter on each instance (open item 3): still on the instance for the decorator and the tag; the `accessor` keyword with `@live` gives the prototype form, for entities made by the thousand.
-- The hint: a marked field no template reads, directly or through a live getter or a method the template calls, is reported as a hint when the project has at least one `.tacet` file.
+- The hint: a marked field no template reads, directly or through a live getter or a method the template calls, is reported as a hint when the project has at least one `.tacet` file, and only for the files a `.tacet` file reaches through its imports (so a test's classes never get one).
+- The instance is marked raw once, on its prototype (Vue reads `__v_skip` through the chain), instead of a `markRaw` on every instance. A class with the `accessor` keyword gets the ref in the accessor's own slot. Measured in RESEARCH: the instance form costs about half a microsecond per marked field, the accessor form 0.35 µs and is invisible to `JSON.stringify`.
+- Vue 3.6 rc.13 (open item 5): the suite passes unchanged, and a `vapor` component drives the same view. The first "it has been tried" in the README is true again.
 
 ## Open
 1. **`as live` on an expression, implemented as above; to try on a real player or socket.** The original note: `this.player.currentTime as live` inside a `@live` getter watches that one property on that one object (Tacet installs an accessor on the instance at the first read). It is the only way to follow a library object that changes itself with no callback (a player's time, a socket's state, a model's property on its own timer); the value rule covers the rest. Costs: a plain data property only (a library getter or a frozen object = a runtime error naming the property at the first read, never stale); `as live` is a build transform dressed as a cast (one type declaration keeps the editor quiet).
@@ -45,6 +47,5 @@
 2. **A class loaded with no build.** Tags: plain fields, the screen never updates, no error. Decorators: `SyntaxError`. Decide whether the silent case needs a check (for example, the mount warns when a view has no marked field).
 3. **The tag plugin writing the prototype getter** (0.08 µs an instance against 1.1 µs). The plugin owns its output, so it can; not done yet.
 4. **The `.tacet` script in a `.vue`-aware editor.** `"files.associations"` is in `.vscode/settings.json`; not tried in an editor here.
-5. **Vue 3.6.** The runtime uses six public functions and ran unchanged on 3.6 Vapor in the prototype; the new `@deep` proxy has not been tried there.
-6. **Devtools.** Not tried. Open a Tacet view in the Vue devtools in a browser before promising it works there.
-7. **The check's cost.** It builds a TypeScript program on each `vite dev` change (about a second here). A watch program would make it incremental.
+5. **Devtools.** Not tried. Open a Tacet view in the Vue devtools in a browser before promising it works there.
+6. **The `accessor` form and JSON.** A prototype getter is not an own property: `JSON.stringify` and `Object.keys` skip it. Decide whether Tacet should add a `toJSON` to such a class, or leave it to the author (the README says the latter for now).

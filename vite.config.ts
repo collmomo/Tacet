@@ -8,7 +8,7 @@ export default defineConfig({
     plugins: tacet(),
     test: {
         root: ".",
-        include: ["tests/**/*.test.ts"],
+        include: ["tests/**/*.test.ts", "bench/**/*.test.ts"],
         environment: "jsdom",
     },
 });

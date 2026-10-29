@@ -818,24 +818,42 @@ function virtualFor(tacet: string, source: string): Virtual {
 
 // ---------------------------------------------------------------------------
 
-/** Checks a project: its `@live` getters and its `.tacet` templates. */
-export function checkProject(options: CheckOptions = {}): Diagnostic[] {
-    const root = path.resolve(options.root ?? process.cwd());
-    const configPath = ts.findConfigFile(root, ts.sys.fileExists, options.tsconfig ?? "tsconfig.json");
-    if (configPath === undefined) throw new Error(`Tacet: no tsconfig found from ${root}.`);
-    const config = ts.readConfigFile(configPath, ts.sys.readFile);
-    const parsed = ts.parseJsonConfigFileContent(config.config, ts.sys, path.dirname(configPath), undefined, configPath, undefined, [
-        {extension: "tacet", isMixedContent: true, scriptKind: ts.ScriptKind.Deferred},
-    ]);
-    const tacetFiles = parsed.fileNames.filter(name => name.endsWith(".tacet"));
-    const virtuals = new Map<string, Virtual>();
-    for (const file of tacetFiles) {
-        const source = ts.sys.readFile(file);
-        if (source === undefined) continue;
-        const virtual = virtualFor(file, source);
-        virtuals.set(virtual.name, virtual);
+/** A checker that keeps its TypeScript program between runs, so a change in dev costs a fraction of the first run. */
+export class Checker {
+    private readonly options: CheckOptions;
+    private previous: ts.Program | undefined;
+    /** Parsed files by name, kept while their text does not change, so TypeScript reuses them. */
+    private readonly cache = new Map<string, {text: string; file: ts.SourceFile}>();
+
+    constructor(options: CheckOptions = {}) {
+        this.options = options;
     }
-    return checkFiles(parsed.fileNames.filter(name => !name.endsWith(".tacet")), parsed.options, virtuals);
+
+    /** Checks the project: its `@live` getters and its `.tacet` templates. */
+    public check(): Diagnostic[] {
+        const root = path.resolve(this.options.root ?? process.cwd());
+        const configPath = ts.findConfigFile(root, ts.sys.fileExists, this.options.tsconfig ?? "tsconfig.json");
+        if (configPath === undefined) throw new Error(`Tacet: no tsconfig found from ${root}.`);
+        const config = ts.readConfigFile(configPath, ts.sys.readFile);
+        const parsed = ts.parseJsonConfigFileContent(config.config, ts.sys, path.dirname(configPath), undefined, configPath, undefined, [
+            {extension: "tacet", isMixedContent: true, scriptKind: ts.ScriptKind.Deferred},
+        ]);
+        const virtuals = new Map<string, Virtual>();
+        for (const file of parsed.fileNames.filter(name => name.endsWith(".tacet"))) {
+            const source = ts.sys.readFile(file);
+            if (source === undefined) continue;
+            const virtual = virtualFor(file, source);
+            virtuals.set(virtual.name, virtual);
+        }
+        const result = checkFiles(parsed.fileNames.filter(name => !name.endsWith(".tacet")), parsed.options, virtuals, this.previous, this.cache);
+        this.previous = result.program;
+        return result.diagnostics;
+    }
+}
+
+/** Checks a project once. */
+export function checkProject(options: CheckOptions = {}): Diagnostic[] {
+    return new Checker(options).check();
 }
 
 /** The check over explicit files; the `.tacet` sources are handed in, for tests. */
@@ -845,20 +863,43 @@ export function checkSources(files: string[], tacets: Record<string, string>, co
         const virtual = virtualFor(path.resolve(file), source);
         virtuals.set(virtual.name, virtual);
     }
-    return checkFiles(files.map(file => path.resolve(file)), compilerOptions, virtuals);
+    return checkFiles(files.map(file => path.resolve(file)), compilerOptions, virtuals).diagnostics;
 }
 
-function checkFiles(files: string[], compilerOptions: ts.CompilerOptions, virtuals: Map<string, Virtual>): Diagnostic[] {
+/** The files a `.tacet` file reaches through its imports: the only ones whose marks a template can read. */
+function reachableFrom(program: ts.Program, checker: ts.TypeChecker, roots: ts.SourceFile[]): Set<ts.SourceFile> {
+    const seen = new Set<ts.SourceFile>();
+    const queue = [...roots];
+    while (queue.length > 0) {
+        const file = queue.pop()!;
+        if (seen.has(file)) continue;
+        seen.add(file);
+        for (const statement of file.statements) {
+            const specifier = ts.isImportDeclaration(statement) || ts.isExportDeclaration(statement) ? statement.moduleSpecifier : undefined;
+            if (specifier === undefined) continue;
+            const symbol = checker.getSymbolAtLocation(specifier);
+            const target = symbol?.valueDeclaration ?? symbol?.declarations?.[0];
+            if (target !== undefined && ts.isSourceFile(target)) queue.push(target);
+        }
+    }
+    return seen;
+}
+
+function checkFiles(files: string[], compilerOptions: ts.CompilerOptions, virtuals: Map<string, Virtual>, previous?: ts.Program, cache?: Map<string, {text: string; file: ts.SourceFile}>): {diagnostics: Diagnostic[]; program: ts.Program} {
     const host = ts.createCompilerHost(compilerOptions, true);
-    const {fileExists, readFile, getSourceFile} = host;
+    const {fileExists, readFile} = host;
     host.fileExists = name => virtuals.has(name) || fileExists.call(host, name);
     host.readFile = name => virtuals.get(name)?.code ?? readFile.call(host, name);
-    host.getSourceFile = (name, language, onError, shouldCreate) => {
-        const virtual = virtuals.get(name);
-        if (virtual !== undefined) return ts.createSourceFile(name, virtual.code, language, true, ts.ScriptKind.TS);
-        return getSourceFile.call(host, name, language, onError, shouldCreate);
+    host.getSourceFile = (name, language) => {
+        const text = virtuals.get(name)?.code ?? readFile.call(host, name);
+        if (text === undefined) return undefined;
+        const known = cache?.get(name);
+        if (known !== undefined && known.text === text) return known.file;
+        const file = ts.createSourceFile(name, text, language, true, virtuals.has(name) ? ts.ScriptKind.TS : undefined);
+        cache?.set(name, {text, file});
+        return file;
     };
-    const program = ts.createProgram([...files, ...virtuals.keys()], {...compilerOptions, noEmit: true}, host);
+    const program = ts.createProgram([...files, ...virtuals.keys()], {...compilerOptions, noEmit: true}, host, previous);
     const checker = program.getTypeChecker();
     const analysis = new Analysis(checker);
     analysis.locate = (file, position) => {
@@ -907,14 +948,16 @@ function checkFiles(files: string[], compilerOptions: ts.CompilerOptions, virtua
 
     if (virtuals.size > 0) {
         const reads = analysis.allReads();
+        const roots = [...virtuals.keys()].map(name => program.getSourceFile(name)).filter((file): file is ts.SourceFile => file !== undefined);
+        const reachable = reachableFrom(program, checker, roots);
         for (const {node, file} of marked) {
-            if (reads.has(node)) continue;
+            if (reads.has(node) || !reachable.has(file)) continue;
             const {line, character} = file.getLineAndCharacterOfPosition(node.name.getStart(file));
             const owner = (node.parent as ts.ClassLikeDeclaration).name?.text ?? "the class";
             diagnostics.push({file: file.fileName, line: line + 1, column: character + 1, level: "hint", message: `"${(node.name as ts.Identifier).text}" of ${owner} is marked @${markOf(node)}, and no template reads it. The mark costs a little on every write; drop it if nothing on the screen needs it.`});
         }
     }
-    return diagnostics;
+    return {diagnostics, program};
 }
 
 export function formatDiagnostic(diagnostic: Diagnostic, root = process.cwd()): string {

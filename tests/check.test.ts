@@ -2,7 +2,7 @@ import {describe, expect, it} from "vitest";
 import {readFileSync} from "node:fs";
 import path from "node:path";
 import ts from "typescript";
-import {checkSources, type Diagnostic} from "../src/check";
+import {Checker, checkSources, type Diagnostic} from "../src/check";
 
 const here = path.resolve(__dirname, "check");
 const options: ts.CompilerOptions = {
@@ -60,5 +60,21 @@ describe("the template check", () => {
             [5, 19, `A template never writes a field: "view.plain". Go through a method of the view.`],
             [6, 20, `"view.rows": what is inside it can change and is not followed. Hold it in a @deep field, or type it readonly.`],
         ]);
+    });
+});
+
+describe("the checker in dev", () => {
+    it("reads the tsconfig, finds the .tacet files, and keeps its program between runs", () => {
+        const checker = new Checker({root: here});
+        const first = performance.now();
+        const once = checker.check();
+        const firstTook = performance.now() - first;
+        const second = performance.now();
+        const twice = checker.check();
+        const secondTook = performance.now() - second;
+        expect(once.map(d => d.message)).toEqual(twice.map(d => d.message));
+        expect(once.filter(d => d.level === "error")).toEqual([]);
+        expect(once.map(d => d.message)).toEqual([`"unused" of Manager is marked @live, and no template reads it. The mark costs a little on every write; drop it if nothing on the screen needs it.`]);
+        expect(secondTook).toBeLessThan(firstTook);
     });
 });

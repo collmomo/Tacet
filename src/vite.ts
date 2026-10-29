@@ -6,7 +6,7 @@ import vue, {type Options as VueOptions} from "@vitejs/plugin-vue";
 import type {Plugin, ResolvedConfig} from "vite";
 import {tacetTags, type TagsOptions} from "./tags";
 import {tacetFiles, type FilesOptions} from "./files";
-import {checkProject, formatDiagnostic, type CheckOptions} from "./check";
+import {Checker, formatDiagnostic, type CheckOptions} from "./check";
 
 export interface TacetOptions extends TagsOptions, FilesOptions {
     /** Passed on to `@vitejs/plugin-vue` for the `.tacet` files. */
@@ -18,9 +18,12 @@ export interface TacetOptions extends TagsOptions, FilesOptions {
 /** Runs the check when a build starts and when a file changes in dev. A build with an error fails. */
 export function tacetCheck(options: CheckOptions = {}): Plugin {
     let config: ResolvedConfig;
+    let checker: Checker;
     const run = (fail: (message: string) => never): void => {
-        const root = options.root ?? config.root;
-        const diagnostics = checkProject({...options, root});
+        checker ??= new Checker({...options, root: options.root ?? config.root});
+        const started = performance.now();
+        const diagnostics = checker.check();
+        if (config.command === "serve") config.logger.info(`[tacet] checked in ${Math.round(performance.now() - started)} ms`);
         const errors = diagnostics.filter(d => d.level === "error").map(d => formatDiagnostic(d, config.root));
         const hints = diagnostics.filter(d => d.level === "hint").map(d => formatDiagnostic(d, config.root));
         for (const hint of hints) config.logger.warn(`[tacet] ${hint}`);
@@ -58,4 +61,4 @@ export function tacet(options: TacetOptions = {}): Plugin[] {
 }
 
 export {tacetTags, tacetFiles, type TagsOptions, type FilesOptions};
-export {checkProject, formatDiagnostic, type CheckOptions, type Diagnostic} from "./check";
+export {Checker, checkProject, formatDiagnostic, type CheckOptions, type Diagnostic} from "./check";

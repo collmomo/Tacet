@@ -14,7 +14,8 @@
     "dev": "vite",
     "build": "vite build",
     "test": "vitest run",
-    "check": "vue-tsc --noEmit"
+    "check": "vue-tsc --noEmit",
+    "bench": "BENCH=1 NODE_OPTIONS=\"--expose-gc --max-old-space-size=12288\" vitest run --dir bench --pool=forks"
   },
   "peerDependencies": {
     "@vitejs/plugin-vue": "^6.0.0",

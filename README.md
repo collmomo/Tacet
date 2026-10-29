@@ -24,6 +24,8 @@ No mark: plain. The framework never touches it.
 
 `@live` on a getter: the result is kept until something it read changes. A getter with no mark is a plain getter and runs on every read; it can be slower, never wrong. A method never needs a mark.
 
+`@live accessor` or `@deep accessor` puts the getter and the setter on the prototype instead of on each instance. The field then looks like a field to everything but `JSON.stringify` and `Object.keys`, which see own properties only: a class saved that way needs a `toJSON`.
+
 In one sentence: `@live` tracks assignment, `@deep` tracks mutation. `items.push(x)` under `@live` tells no one; `items = [...items, x]` does. Under `@deep`, the push is enough.
 
 Four rules keep the marks honest:
@@ -325,16 +327,16 @@ It is not a store, not a state manager, not a way to organise components. The sh
 
 ## What it costs, measured
 
-One view holding a plain array of 1,000,000 slot objects in an unmarked field, and a template that walks it. Vue 3.5, the same view, two ways: through Tacet's marks, and wrapped the Vue way with `reactive(view)`.
+One view holding a plain array of 1,000,000 slot objects in an unmarked field, and a template that walks it. Vue 3.5.44, the same view, two ways: through Tacet's marks, and wrapped the Vue way with `reactive(view)`. Node 22, jsdom, the median of ten redraws.
 
-| | One redraw | Memory after mount | A write into the layout redraws? |
-|---|---|---|---|
-| Tacet | 35 ms | +0 MB | no |
-| `reactive(view)` | 4,964 ms | +1,009 MB | yes |
+| | Mount | One redraw | Memory after mount | A write into the layout redraws? |
+|---|---|---|---|---|
+| Tacet | 19 ms | 2 ms | +0 MB | no |
+| `reactive(view)` | 1,300 ms | 1,100 ms | +446 MB | yes |
 
-The wrapped view is 140 times slower and holds a gigabyte of proxies. Vue wraps lazily, so the cost is not the wrapping: it is the first reader that walks the layout through the wrapper, and every redraw after it. Tacet walks nothing it was not told to. A template that reads only a counter costs the same either way, under a millisecond.
+The wrapped view is five hundred times slower and holds half a gigabyte of proxies. Vue wraps lazily, so the cost is not the wrapping: it is the first reader that walks the layout through the wrapper, and every redraw after it. Tacet walks nothing it was not told to. A template that reads only a counter costs the same either way, well under a millisecond.
 
-A marked field costs 13.5 nanoseconds a read in the benchmark, against 0.9 for a plain field: fifteen times, and still nothing a screen can feel. The measurements and how to run them are in RESEARCH.md.
+A marked field costs about nine nanoseconds a read, against one to three for a plain field, and still nothing a screen can feel. Making an instance costs about half a microsecond per marked field, which is `Object.defineProperty` putting the getter on it; a million entities with two marks pay a second. The benchmarks are in `bench/`, run with `npm run bench`; the earlier prototype's runs are in RESEARCH.md.
 
 ## Running it
 
@@ -354,7 +356,7 @@ The library is `src/`: `tacet.ts` is the runtime (the marks, the getter, `as liv
 - **Less to write.** No refs, no computed, no watchers, no stores, no wiring between them. A class with two marks and a template that reads it.
 - **The same code runs without a screen.** A view is a plain class: a test drives it with no browser, a script drives it, a model can drive it through the same methods a button calls. In Valorum, the chat model got 490 actions from the existing methods because they were already there.
 - **Nothing to learn twice.** The template is the one you know. The class is the one you would write anyway. The marks are two words.
-- **A renderer that gets better on its own.** Tacet sits on Vue's renderer. When Vue's next renderer ships, the one without the virtual tree, a `.tacet` file runs on it unchanged, and it has been tried.
+- **A renderer that gets better on its own.** Tacet sits on Vue's renderer. When Vue's next renderer ships, the one without the virtual tree, a `.tacet` file runs on it unchanged: the test suite passes on the 3.6 release candidate, and a `.tacet` file with `vapor` on its script drives the same view.
 
 ## Why
 
