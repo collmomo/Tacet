@@ -149,7 +149,7 @@ export class TodoView {
 </template>
 
 <script lang="ts">
-  const view = app.todo;
+  const view = new TodoView(new TodoStorage());
   const filters: TodoFilter[] = ["all", "open", "done"];
 </script>
 
@@ -162,9 +162,10 @@ export class TodoView {
 **Starting it** (`main.ts`):
 
 ```ts
-export const app = {todo: new TodoView(new TodoStorage())};
-mount(Todos, "#app");
+createApp(Todos).mount("#app");
 ```
+
+The root component makes its own objects. A child gets its view as a prop, or reaches it through the object its parent gave it. Tacet never holds a view and never asks you to register one.
 
 **A test, no browser:**
 
@@ -189,11 +190,11 @@ export class TodoView {
 }
 ```
 
-What is not there: refs, computed, watch, stores, props drilling, emits, a base class, a call to make things live. The template reads the view and calls it. The view is a class you can use from a test, from a script, or from anything else.
+What is not there: refs, computed, watch, stores, emits, a base class, a call to make things live, a place to register views. The template reads the view and calls it. The view is a class you can use from a test, from a script, or from anything else.
 
 ## What Tacet is, and is not
 
-Tacet mounts a component and keeps the marked fields live. That is its whole job.
+Tacet mounts a component and keeps the marked fields live. That is its whole job. It does not know what a view is.
 
 It borrows a renderer first. The one-file layout and the template syntax stay what they are, because they are the good part. Its own words are the marks and the rules above. What draws the DOM underneath can change later without the user noticing.
 
