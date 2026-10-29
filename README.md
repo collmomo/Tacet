@@ -208,8 +208,6 @@ When a view needs a DOM element, the template hands it over. Point `ref` at a fi
 private box: HTMLDivElement | null = null;   // plain: never marked, never walked
 ```
 
-Something to do the moment the element is there belongs to the component's lifecycle hook, `onMounted(() => view.draw())`, with `view.box` already filled.
-
 No variable in the script, no method for it, nothing kept in the template. The element lives in a plain field of the view, which is the only place a DOM node should ever be.
 
 ## What stays from Vue, and what goes
