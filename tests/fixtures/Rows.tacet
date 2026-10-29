@@ -1,0 +1,10 @@
+<template>
+  <ul>
+    <li v-for="(row, i) in view.rows" :key="i">{{ row.n }}</li>
+  </ul>
+</template>
+
+<script setup lang="ts">
+  import {RowsView} from "./RowsView";
+  defineProps<{view: RowsView}>();
+</script>

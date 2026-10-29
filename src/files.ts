@@ -3,7 +3,7 @@ import MagicString, {type SourceMap} from "magic-string";
 import type {Plugin} from "vite";
 
 export interface FilesOptions {
-    /** The module `assignElement` is imported from. Default: "tacet/runtime". */
+    /** The module `assignElement` and `readItems` are imported from. Default: "tacet/runtime". */
     runtime?: string;
 }
 
@@ -14,6 +14,7 @@ export interface FilesResult {
 }
 
 const REF_ATTRIBUTE = /(^|\s)ref\s*=\s*(["'])([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+)\2/g;
+const FOR_ATTRIBUTE = /(^|\s)v-for\s*=\s*(["'])\s*(.+?)\s+(in|of)\s+(.+?)\s*\2/g;
 
 /** Rewrites one `.tacet` file; `null` when nothing needed doing. */
 export function rewriteTacetFile(code: string, id: string, options: FilesOptions = {}): FilesResult | null {
@@ -24,6 +25,7 @@ export function rewriteTacetFile(code: string, id: string, options: FilesOptions
     const warnings: string[] = [];
     let touched = false;
     let refs = 0;
+    let loops = 0;
 
     if (descriptor.template !== null) {
         const {start, end} = descriptor.template.loc;
@@ -39,7 +41,15 @@ export function rewriteTacetFile(code: string, id: string, options: FilesOptions
             refs++;
             touched = true;
         }
+        for (const match of template.matchAll(FOR_ATTRIBUTE)) {
+            const source = match[5];
+            const at = start.offset + match.index + match[0].lastIndexOf(source);
+            edit.overwrite(at, at + source.length, `__tacetEach(${source})`);
+            loops++;
+            touched = true;
+        }
     }
+    const imports = [...(refs > 0 ? ["assignElement as __tacetRef"] : []), ...(loops > 0 ? ["readItems as __tacetEach"] : [])];
 
     const script = descriptor.scriptSetup ?? descriptor.script;
     if (script !== null) {
@@ -50,9 +60,11 @@ export function rewriteTacetFile(code: string, id: string, options: FilesOptions
                 touched = true;
             }
         }
-        if (refs > 0) edit.appendLeft(script.loc.start.offset, `\nimport {assignElement as __tacetRef} from ${JSON.stringify(runtime)};\n`);
+        if (imports.length > 0) edit.appendLeft(script.loc.start.offset, `\nimport {${imports.join(", ")}} from ${JSON.stringify(runtime)};\n`);
     } else if (refs > 0) {
         warnings.push(`${id}: ref="view.box" needs a <script> block that holds \`view\`.`);
+    } else if (loops > 0) {
+        warnings.push(`${id}: v-for needs a <script> block, where Tacet puts its import.`);
     }
 
     if (!touched) return null;

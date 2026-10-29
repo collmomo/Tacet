@@ -4,6 +4,8 @@ import {nextTick} from "vue";
 import {rewriteTacetFile} from "../src/files";
 import Box from "./fixtures/Box.tacet";
 import {BoxView} from "./fixtures/BoxView";
+import Rows from "./fixtures/Rows.tacet";
+import {RowsView} from "./fixtures/RowsView";
 
 // `box` stays a plain field, as the check asks, so a proxy counts the writes into it.
 function countBoxWrites(view: BoxView): BoxView {
@@ -14,6 +16,11 @@ describe("a .tacet file, rewritten", () => {
     it("adds setup to the script and turns ref into a call on the view's field", () => {
         const result = rewriteTacetFile(`<template>\n  <div ref="view.box"></div>\n  <canvas ref='view.manager.canvas'></canvas>\n  <p ref="plain"></p>\n</template>\n<script lang="ts">\nimport {V} from "./V";\nconst view = new V();\n</script>`, "/a.tacet");
         expect(result?.code).toBe(`<template>\n  <div :ref="__tacetRef(view, 'box')"></div>\n  <canvas :ref='__tacetRef(view.manager, "canvas")'></canvas>\n  <p ref="plain"></p>\n</template>\n<script setup lang="ts">\nimport {assignElement as __tacetRef} from "tacet/runtime";\n\nimport {V} from "./V";\nconst view = new V();\n</script>`);
+    });
+
+    it("hands every v-for source to the runtime, so the rows come wrapped", () => {
+        const result = rewriteTacetFile(`<template>\n  <li v-for="(todo, i) in view.shownTodos" :key="i"></li>\n  <p v-for='row of view.rows'></p>\n  <b ref="view.box"></b>\n</template>\n<script setup lang="ts">\nconst view = {};\n</script>`, "/a.tacet");
+        expect(result?.code).toBe(`<template>\n  <li v-for="(todo, i) in __tacetEach(view.shownTodos)" :key="i"></li>\n  <p v-for='row of __tacetEach(view.rows)'></p>\n  <b :ref="__tacetRef(view, 'box')"></b>\n</template>\n<script setup lang="ts">\nimport {assignElement as __tacetRef, readItems as __tacetEach} from "tacet/runtime";\n\nconst view = {};\n</script>`);
     });
 
     it("leaves a script that already has setup, and a file with nothing to do", () => {
@@ -66,5 +73,19 @@ describe("a .tacet component, mounted", () => {
         wrapper.unmount();
         expect(view.box).toBeNull();
         expect(view.boxWrites).toBe(2);
+    });
+
+    it("follows a plain row under @deep that v-for walks, and a push", async () => {
+        const view = new RowsView();
+        const wrapper = mount(Rows, {props: {view}});
+        expect(wrapper.findAll("li").map(li => li.text())).toEqual(["1", "2"]);
+
+        view.bump(0);
+        await nextTick();
+        expect(wrapper.findAll("li").map(li => li.text())).toEqual(["2", "2"]);
+
+        view.add(9);
+        await nextTick();
+        expect(wrapper.findAll("li").map(li => li.text())).toEqual(["2", "2", "9"]);
     });
 });
