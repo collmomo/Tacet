@@ -24,8 +24,6 @@ No mark: plain. The framework never touches it.
 
 `@live` on a getter: the result is kept until something it read changes. A getter with no mark is a plain getter and runs on every read; it can be slower, never wrong. A method never needs a mark.
 
-`@live accessor` or `@deep accessor` puts the getter and the setter on the prototype instead of on each instance. The field then looks like a field to everything but `JSON.stringify` and `Object.keys`, which see own properties only: a class saved that way needs a `toJSON`.
-
 In one sentence: `@live` tracks assignment, `@deep` tracks mutation. `items.push(x)` under `@live` tells no one; `items = [...items, x]` does. Under `@deep`, the push is enough.
 
 Four rules keep the marks honest:
@@ -54,7 +52,7 @@ Tacet is written for TypeScript and works in plain JavaScript. In JavaScript the
 - **events**: the screen's events, held by the view and handled apart from its state: a key, a click, a change, each turned into a call on the view or its manager. A `TodoEvents`, reached as `view.events`.
 - **components**: the one-file pages and pieces, `.tacet` files. Template, script, style together. The script is the imports and the view, nothing else.
 
-This shape is a convention, not a rule of the framework. Tacet knows only the marks and the template: an events class is one way to keep every handler in one place, and a template may just as well call the view directly. A view can hold another view, an entity or a manager, and read its marked fields through it. Where shared state lives is your design: a third view, composition, inheritance. The framework stays out of it.
+A view can hold another view, an entity or a manager, and read its marked fields through it. Where shared state lives is your design: a third view, composition, inheritance. The framework stays out of it.
 
 ## The rules
 
@@ -196,7 +194,7 @@ export class TodoEvents {
 }
 ```
 
-**The component** (`components/Todos.tacet`, the same three blocks a `.vue` file has, compiled by the borrowed compiler; the script is a `<script setup>`, so the template sees its names):
+**The component** (`components/Todos.tacet`, the same three blocks a `.vue` file has, compiled by the borrowed compiler):
 
 ```html
 <template>
@@ -211,12 +209,12 @@ export class TodoEvents {
   <button v-for="f in filters" :key="f" :class="{picked: view.filter === f}" @click="view.events.handleFilter(f)">{{ f }}</button>
 </template>
 
-<script setup lang="ts">
+<script lang="ts">
   import {TodoView, type TodoFilter} from "../views/TodoView";
   import {TodoManager} from "../managers/TodoManager";
 
   const view = new TodoView(new TodoManager());
-  const filters: readonly TodoFilter[] = ["all", "open", "done"];
+  const filters: TodoFilter[] = ["all", "open", "done"];
 </script>
 
 <style>
@@ -242,8 +240,6 @@ import {tacet} from "tacet/vite";
 
 export default defineConfig({plugins: tacet()});
 ```
-
-The `filters` list is typed `readonly` because the template walks it: the check below asks that whatever a screen reads can be followed, and a `readonly` array cannot change under it.
 
 The root component makes its own objects. A child gets its view as a prop, or reaches it through the object its parent gave it. Tacet never holds a view and never asks you to register one.
 
@@ -285,18 +281,6 @@ A `vite build` with an error fails. In `vite dev` the error is logged on every c
 
 The check reads the project's `tsconfig.json`, so what it covers is what the tsconfig includes. Type-checking the templates themselves is `vue-tsc`, with one tsconfig line, `"vueCompilerOptions": {"extensions": [".vue", ".tacet"]}`, and the editor needs one setting, `"files.associations": {"*.tacet": "vue"}`.
 
-## One property of a library's object
-
-A library object that changes itself with no callback, a player's time, a socket's state, has nothing to mark. `as live` on one property read, inside a `@live` getter, follows that one property on that one object:
-
-```ts
-@live public get time(): number {
-    return this.player.currentTime as live;
-}
-```
-
-At the first read Tacet puts a getter and a setter on that property of that instance. It must be a plain, writable property of the object's own: a getter of the library's, or a frozen object, is an error naming the property at the first read, never a stale value. The build rewrites the cast; the editor sees a type.
-
 ## An element of the DOM
 
 When a view needs a DOM element, the template hands it over. Point `ref` at a field of the view: Tacet puts the element there when it is drawn and `null` when it is removed, and writes it only when it differs.
@@ -327,16 +311,22 @@ It is not a store, not a state manager, not a way to organise components. The sh
 
 ## What it costs, measured
 
-One view holding a plain array of 1,000,000 slot objects in an unmarked field, and a template that walks it. Vue 3.5.44, the same view, two ways: through Tacet's marks, and wrapped the Vue way with `reactive(view)`. Node 22, jsdom, the median of ten redraws.
+One view holding a plain array of 1,000,000 slot objects in an unmarked field, and a template that walks it. Vue 3.5, the same view, two ways: through Tacet's marks, and wrapped the Vue way with `reactive(view)`.
 
-| | Mount | One redraw | Memory after mount | A write into the layout redraws? |
-|---|---|---|---|---|
-| Tacet | 19 ms | 2 ms | +0 MB | no |
-| `reactive(view)` | 1,300 ms | 1,100 ms | +446 MB | yes |
+| | One redraw | Memory after mount | A write into the layout redraws? |
+|---|---|---|---|
+| Tacet | 35 ms | +0 MB | no |
+| `reactive(view)` | 4,964 ms | +1,009 MB | yes |
 
-The wrapped view is five hundred times slower and holds half a gigabyte of proxies. Vue wraps lazily, so the cost is not the wrapping: it is the first reader that walks the layout through the wrapper, and every redraw after it. Tacet walks nothing it was not told to. A template that reads only a counter costs the same either way, well under a millisecond.
+The wrapped view is 140 times slower and holds a gigabyte of proxies. Vue wraps lazily, so the cost is not the wrapping: it is the first reader that walks the layout through the wrapper, and every redraw after it. Tacet walks nothing it was not told to. A template that reads only a counter costs the same either way, under a millisecond.
 
-A marked field costs about nine nanoseconds a read, against one to three for a plain field, and still nothing a screen can feel. Making an instance costs about half a microsecond per marked field, which is `Object.defineProperty` putting the getter on it; a million entities with two marks pay a second. The benchmarks are in `bench/`, run with `npm run bench`; the earlier prototype's runs are in RESEARCH.md.
+A marked field costs 13.5 nanoseconds a read in the benchmark, against 0.9 for a plain field: fifteen times, and still nothing a screen can feel. The measurements and how to run them are in RESEARCH.md.
+
+The same benches, run again where this branch was built (Node 22.22, Vue 3.5.44, jsdom):
+
+<!-- branch run: numbers pending -->
+
+The benches are in `bench/` and run with `npm run bench`.
 
 ## Running it
 
@@ -350,7 +340,11 @@ npm run build:lib  # the library to dist/, with its types
 npm run bench    # the redraw cost and the price of a mark
 ```
 
-The library is `src/`: `tacet.ts` is the runtime (the marks, the getter, `as live`, the element), `tags.ts` the comment tags, `files.ts` the `.tacet` files, `check.ts` the check, `vite.ts` the plugin that ties them together.
+`typescript` is a dependency because the check needs it. Only `tacet/vite` pulls it; the entry `tacet` does not.
+
+The marks in a plain `.js` file are the comment tags. A user who wants decorators in `.js` files sets esbuild in the Vite config: `esbuild: {include: /\.(m?[jt]sx?)$/, exclude: [], target: "es2022"}`.
+
+The library is `src/`: `tacet.ts` the marks, `runtime.ts` what the build inserts, `tags.ts` the comment tags, `files.ts` the `.tacet` files, `check.ts` the check, `vite.ts` the plugin.
 
 ## Why it is useful
 
@@ -358,7 +352,7 @@ The library is `src/`: `tacet.ts` is the runtime (the marks, the getter, `as liv
 - **Less to write.** No refs, no computed, no watchers, no stores, no wiring between them. A class with two marks and a template that reads it.
 - **The same code runs without a screen.** A view is a plain class: a test drives it with no browser, a script drives it, a model can drive it through the same methods a button calls. In Valorum, the chat model got 490 actions from the existing methods because they were already there.
 - **Nothing to learn twice.** The template is the one you know. The class is the one you would write anyway. The marks are two words.
-- **A renderer that gets better on its own.** Tacet sits on Vue's renderer. When Vue's next renderer ships, the one without the virtual tree, a `.tacet` file runs on it unchanged: the test suite passes on the 3.6 release candidate, and a `.tacet` file with `vapor` on its script drives the same view.
+- **A renderer that gets better on its own.** Tacet sits on Vue's renderer. When Vue's next renderer ships, the one without the virtual tree, a `.tacet` file runs on it unchanged, and it has been tried.
 
 ## Why
 
