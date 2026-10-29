@@ -4,9 +4,16 @@
   <button @click="view.plain = 2">write</button>
   <button @click="view.plain++">bump</button>
   <p v-for="row in view.rows" :key="row.n">{{ row.n }}</p>
+  <div ref="view.bx"></div>
+  <div ref="view.unread"></div>
+  <div ref="view.counter"></div>
+  <div ref="view.a"></div>
+  <p v-for="n in pushed" :key="n">{{ n }}</p>
 </template>
 
 <script setup lang="ts">
   import {BadView} from "./Bad";
   const view = new BadView(() => 1);
+  const pushed: number[] = [];
+  pushed.push(1);
 </script>

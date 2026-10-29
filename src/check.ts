@@ -1,10 +1,4 @@
-/**
- * The build check. A `@live` getter keeps its result until something it read
- * changes, so every read it makes must be one the screen can follow: a marked
- * field, a readonly hop, plain data under `@deep`, a call the build can see
- * through. A template is checked the same way. A plain field that can change
- * is an error naming the hop; a marked field no template reads is a hint.
- */
+// The build check: every read of a `@live` getter or a `.tacet` template is followed hop by hop through the types, and a read the screen could not follow is an error naming it.
 import ts from "typescript";
 import path from "node:path";
 import {compileScript, parse as parseSfc} from "vue/compiler-sfc";
@@ -28,22 +22,21 @@ export interface CheckOptions {
 /** Where a value came from, which says what reads into it the screen can follow. */
 type Source =
     | "deep"      // plain data under @deep: everything inside is followed
-    | "fresh"     // a literal made in this computation: nobody else holds it
-    | "tracked"   // a marked field's value or a live getter's result: the value, not its inside
-    | "fixed"     // an identity that cannot change: `this`, a readonly field, a const; its inside by its type
-    | "leaf";     // a value the check does not look into: a primitive, a library object, `any`
+    | "fresh"     // a value made in this computation, or a const the script never writes: nobody else changes it
+    | "tracked"   // a marked field's value or a live getter's result: the value, not what is inside it
+    | "fixed"     // an identity that cannot change: `this`, a readonly field, a global; its inside by its type
+    | "leaf";     // a value the check does not look into: a primitive, a value under a followed base, `any`
 
-const STRICTNESS: Record<Source, number> = {leaf: 0, fresh: 1, deep: 1, tracked: 2, fixed: 3};
+type Position = {file: string; line: number; column: number};
+type Locate = (file: ts.SourceFile, position: number) => Position;
 
-function merge(a: Source, b: Source): Source {
-    if (a === b) return a;
+function mergeSources(a: Source, b: Source): Source {
+    if (a === b || b === "leaf") return a;
     if (a === "leaf") return b;
-    if (b === "leaf") return a;
-    const [strict] = [a, b].sort((x, y) => STRICTNESS[y] - STRICTNESS[x]);
-    return strict === "tracked" ? "fixed" : strict;
+    return isFollowed(a) && isFollowed(b) ? a : "fixed";
 }
 
-function followed(source: Source): boolean {
+function isFollowed(source: Source): boolean {
     return source === "deep" || source === "fresh";
 }
 
@@ -58,8 +51,14 @@ const CALLBACK_ELEMENTS: Record<string, number[]> = {
 };
 /** Library functions that read everything inside their argument. */
 const WALKERS = new Set(["Object.keys", "Object.values", "Object.entries", "Object.assign", "Object.freeze", "JSON.stringify", "Array.from", "structuredClone"]);
+/** The walkers whose result is made of their argument. */
+const WALKER_RESULTS = new Set(["Object.values", "Object.entries", "Object.assign", "Object.freeze", "Array.from"]);
+/** The global namespaces whose members never change, so a read on one stays a leaf; every other global object can. */
+const PURE_GLOBALS = new Set(["Math", "JSON", "Object", "Array", "Number", "String", "Boolean", "BigInt", "Symbol", "Reflect", "Intl"]);
+/** The methods that write into an array, a Map or a Set: a const they are called on is written. */
+const MUTATORS = new Set(["push", "pop", "shift", "unshift", "splice", "sort", "reverse", "fill", "copyWithin", "set", "add", "delete", "clear"]);
 
-export function markOf(member: ts.Node): "live" | "deep" | undefined {
+export function readMark(member: ts.Node): "live" | "deep" | undefined {
     if (ts.canHaveDecorators(member)) {
         for (const decorator of ts.getDecorators(member) ?? []) {
             const expression = decorator.expression;
@@ -86,7 +85,41 @@ function isFunctionLike(node: ts.Node): node is ts.ArrowFunction | ts.FunctionEx
     return ts.isArrowFunction(node) || ts.isFunctionExpression(node);
 }
 
-// ---------------------------------------------------------------------------
+/** A member of an object, as against a binding that never changes: an enum, a namespace, a class, a function, a const. */
+function isObjectMember(node: ts.Node): boolean {
+    return ts.isPropertySignature(node) || ts.isMethodSignature(node) || ts.isPropertyDeclaration(node) || ts.isMethodDeclaration(node) || ts.isAccessor(node) || ts.isPropertyAssignment(node) || ts.isShorthandPropertyAssignment(node);
+}
+
+function isAssignmentOperator(kind: ts.SyntaxKind): boolean {
+    return kind >= ts.SyntaxKind.FirstAssignment && kind <= ts.SyntaxKind.LastAssignment;
+}
+
+function isCountOperator(kind: ts.SyntaxKind): boolean {
+    return kind === ts.SyntaxKind.PlusPlusToken || kind === ts.SyntaxKind.MinusMinusToken;
+}
+
+/** A property of a literal under `as const` is readonly without a modifier on it. */
+function isUnderConstAssertion(declaration: ts.Node): boolean {
+    let node = declaration;
+    while (ts.isObjectLiteralExpression(node.parent) || ts.isArrayLiteralExpression(node.parent) || ts.isPropertyAssignment(node.parent) || ts.isParenthesizedExpression(node.parent)) node = node.parent;
+    return ts.isAsExpression(node.parent) && ts.isConstTypeReference(node.parent.type);
+}
+
+/** Whether `node` is assigned, counted, deleted or mutated through a method, itself or through a path into it. */
+function isWriteTarget(node: ts.Node): boolean {
+    let target = node;
+    for (;;) {
+        const parent = target.parent;
+        if (ts.isCallExpression(parent) && parent.expression === target) {
+            if (ts.isPropertyAccessExpression(target) && MUTATORS.has(target.name.text)) return true;
+        } else if (!((ts.isPropertyAccessExpression(parent) || ts.isElementAccessExpression(parent)) && parent.expression === target) && !ts.isNonNullExpression(parent) && !ts.isParenthesizedExpression(parent)) {
+            if (ts.isBinaryExpression(parent)) return parent.left === target && isAssignmentOperator(parent.operatorToken.kind);
+            if (ts.isPrefixUnaryExpression(parent) || ts.isPostfixUnaryExpression(parent)) return isCountOperator(parent.operator);
+            return ts.isDeleteExpression(parent);
+        }
+        target = parent;
+    }
+}
 
 interface Frame {
     locals: Map<ts.Symbol, Source>;
@@ -94,49 +127,45 @@ interface Frame {
 }
 
 class Analysis {
-    private readonly checker: ts.TypeChecker;
-    private readonly stack = new Set<ts.Node>();
     public readonly diagnostics: Diagnostic[] = [];
-    /** The marked members the templates read, directly or through what they call: by declaration. */
+    /** The marked members the templates read, directly or through what they call: by declaration, since TypeScript hands out copies of a symbol. */
     public readonly reads = new Set<ts.Declaration>();
     /** What each live getter reads, so a template that reads the getter reads those too. */
     public readonly getterReads = new Map<ts.Declaration, Set<ts.Declaration>>();
-    /** What each live getter returns, so a read into its result is judged by its body. */
+    private readonly checker: ts.TypeChecker;
+    private readonly locate: Locate;
+    private readonly stack = new Set<ts.Node>();
     private readonly getterResults = new Map<ts.GetAccessorDeclaration, Source>();
+    private readonly writtenConsts = new Map<ts.VariableDeclaration, boolean>();
     private current: Set<ts.Declaration> | undefined;
-    public template = false;
-    /** Maps a position in a virtual file back to its .tacet file. */
-    public locate: (file: ts.SourceFile, position: number) => {file: string; line: number; column: number};
+    private template = false;
 
-    constructor(checker: ts.TypeChecker) {
+    constructor(checker: ts.TypeChecker, locate: Locate) {
         this.checker = checker;
-        this.locate = (file, position) => {
-            const {line, character} = file.getLineAndCharacterOfPosition(position);
-            return {file: file.fileName, line: line + 1, column: character + 1};
-        };
+        this.locate = locate;
     }
 
-    /** A marked member or a live getter was read. TypeScript hands out copies of a symbol, so the declaration is the key. */
-    private note(declaration: ts.Declaration): void {
+    private noteRead(declaration: ts.Declaration): void {
         (this.template ? this.reads : this.current)?.add(declaration);
     }
 
-    private report(node: ts.Node, message: string): void {
+    private reportError(node: ts.Node, message: string): void {
         const file = node.getSourceFile();
-        const at = this.locate(file, node.getStart(file));
-        this.diagnostics.push({...at, level: "error", message});
+        this.diagnostics.push({...this.locate(file, node.getStart(file)), level: "error", message});
     }
 
-    private text(node: ts.Node): string {
+    private readText(node: ts.Node): string {
         return node.getText().replace(/\s+/g, " ");
     }
 
-    private readonlyProperty(symbol: ts.Symbol): boolean {
-        // A property made readonly by `as const` or `Readonly<T>` carries TypeScript's Readonly check flag.
-        const transient = symbol as unknown as {links?: {checkFlags?: number}; checkFlags?: number};
-        const checkFlags = transient.links?.checkFlags ?? transient.checkFlags ?? 0;
-        if (checkFlags & 8 /* CheckFlags.Readonly */) return true;
-        return (symbol.declarations ?? []).some(declaration => hasModifier(declaration, ts.SyntaxKind.ReadonlyKeyword));
+    private nameReader(): string {
+        return this.template ? "the screen" : "the getter";
+    }
+
+    /** Readonly by a modifier, an `as const` around the literal, or a `Readonly<>` owner; the containers have their own rule. */
+    private isReadonlyProperty(property: ts.Symbol, owner: ts.Type): boolean {
+        if (owner.getNonNullableType().aliasSymbol?.getName() === "Readonly") return true;
+        return (property.declarations ?? []).some(declaration => hasModifier(declaration, ts.SyntaxKind.ReadonlyKeyword) || isUnderConstAssertion(declaration));
     }
 
     private isLeafType(type: ts.Type): boolean {
@@ -147,13 +176,18 @@ class Analysis {
         return type.getCallSignatures().length > 0 && type.getProperties().length === 0;
     }
 
-    private containerName(type: ts.Type): string | undefined {
+    private nameContainer(type: ts.Type): string | undefined {
         const base = type.getNonNullableType();
         if (base.isUnion()) {
-            const names = base.types.map(part => this.containerName(part));
-            return names.every(name => name !== undefined) ? names.sort((a, b) => READONLY_CONTAINERS.has(a!) ? 1 : -1)[0] : undefined;
+            const names: string[] = [];
+            for (const part of base.types) {
+                const name = this.nameContainer(part);
+                if (name === undefined) return undefined;
+                names.push(name);
+            }
+            return names.find(name => !READONLY_CONTAINERS.has(name)) ?? names[0];
         }
-        if (this.checker.isTupleType(base)) return (base as ts.TypeReference).target.getFlags() && (base as ts.TupleTypeReference).target.readonly ? "ReadonlyArray" : "Array";
+        if (this.checker.isTupleType(base)) return (base as ts.TupleTypeReference).target.readonly ? "ReadonlyArray" : "Array";
         const symbol = base.getSymbol();
         if (symbol === undefined) return undefined;
         const name = symbol.getName();
@@ -161,351 +195,358 @@ class Analysis {
         return (symbol.declarations ?? []).some(d => d.getSourceFile().isDeclarationFile) ? name : undefined;
     }
 
-    /** What an element of a container holds, given what the container holds. */
-    private elementSource(container: ts.Expression, source: Source): Source {
-        if (source === "leaf" || followed(source)) return source;
-        const type = this.checker.getTypeAtLocation(container);
-        if (this.isLeafType(type)) return "leaf";
-        const name = this.containerName(type);
-        if (name !== undefined && READONLY_CONTAINERS.has(name)) return "fixed";
-        if (name !== undefined) {
-            this.report(container, `"${this.text(container)}": what is inside it can change and is not followed. Hold it in a @deep field, or type it readonly.`);
-            return "leaf";
-        }
-        // An object walked by key: its properties are read; the walk rule.
-        return this.walkAll(container, source) ? "fixed" : "leaf";
-    }
-
-    /** Everything inside `node` is read at once (a spread, Object.keys, JSON.stringify). */
-    private walkAll(node: ts.Expression, source: Source): boolean {
-        if (source === "leaf" || followed(source)) return true;
-        const type = this.checker.getTypeAtLocation(node).getNonNullableType();
-        if (this.isLeafType(type)) return true;
-        const container = this.containerName(type);
-        if (container !== undefined) {
-            if (READONLY_CONTAINERS.has(container)) return true;
-        } else {
-            const symbol = type.getSymbol();
-            const declaration = symbol?.declarations?.[0];
-            if (declaration !== undefined && (declaration.getSourceFile().isDeclarationFile || ts.isClassLike(declaration))) return true;
-            if (type.getProperties().every(property => this.readonlyProperty(property))) return true;
-        }
-        this.report(node, `"${this.text(node)}": everything inside it is read, and it can change by mutation. Hold it in a @deep field, or type it readonly.`);
+    /** A read into a library object, which has nothing to mark: followed only through a field that is replaced when it changes. */
+    private checkLibraryRead(node: ts.Node, text: string, source: Source, type: ts.Type): boolean {
+        if (source !== "fixed") return true;
+        this.reportError(node, `"${text}": a read into ${this.checker.typeToString(type.getNonNullableType())}, a library object that can change under ${this.nameReader()} with nothing to mark. Hold it in a @live field and replace it when it changes, or read that one property \`as live\` if the owner opens it.`);
         return false;
     }
 
-    // -- expressions ---------------------------------------------------------
+    /** What an element of a container holds, given what the container holds. */
+    private readElementSource(container: ts.Expression, source: Source): Source {
+        if (source === "leaf" || isFollowed(source)) return source;
+        const type = this.checker.getTypeAtLocation(container);
+        if (this.isLeafType(type)) return "leaf";
+        const name = this.nameContainer(type);
+        if (name !== undefined && READONLY_CONTAINERS.has(name)) return "fixed";
+        if (name !== undefined) {
+            this.reportError(container, `"${this.readText(container)}": what is inside it can change and is not followed. Hold it in a @deep field, or type it readonly.`);
+            return "leaf";
+        }
+        return this.readWholeValue(container, source) ? "fixed" : "leaf";
+    }
 
-    public evaluate(node: ts.Expression, frame: Frame): Source {
+    /** Everything inside `node` is read at once (a spread, Object.keys, JSON.stringify): whether that can be followed. */
+    private readWholeValue(node: ts.Expression, source: Source): boolean {
+        if (source === "leaf" || isFollowed(source)) return true;
+        const type = this.checker.getTypeAtLocation(node).getNonNullableType();
+        if (this.isLeafType(type)) return true;
+        const container = this.nameContainer(type);
+        if (container !== undefined) {
+            if (READONLY_CONTAINERS.has(container)) return true;
+        } else {
+            const declaration = type.getSymbol()?.declarations?.[0];
+            if (declaration !== undefined && declaration.getSourceFile().isDeclarationFile) return this.checkLibraryRead(node, this.readText(node), source, type);
+            if (declaration !== undefined && ts.isClassLike(declaration)) return true;
+            if (type.getProperties().every(property => this.isReadonlyProperty(property, type))) return true;
+        }
+        this.reportError(node, `"${this.readText(node)}": everything inside it is read, and it can change by mutation. Hold it in a @deep field, or type it readonly.`);
+        return false;
+    }
+
+    public evaluateExpression(node: ts.Expression, frame: Frame): Source {
         if (node.kind === ts.SyntaxKind.ThisKeyword) return frame.thisSource;
-        if (ts.isIdentifier(node)) return this.identifier(node, frame);
-        if (ts.isPropertyAccessExpression(node)) return this.access(node, node.expression, node.name.text, frame);
+        if (ts.isIdentifier(node)) return this.readIdentifier(node, frame);
+        if (ts.isPropertyAccessExpression(node)) return this.readAccess(node, node.expression, node.name.text, frame);
         if (ts.isElementAccessExpression(node)) {
             const key = node.argumentExpression;
-            if (ts.isStringLiteralLike(key) || ts.isNumericLiteral(key)) return this.access(node, node.expression, key.text, frame);
-            this.evaluate(key, frame);
-            return this.elementSource(node.expression, this.evaluate(node.expression, frame));
+            if (ts.isStringLiteralLike(key) || ts.isNumericLiteral(key)) return this.readAccess(node, node.expression, key.text, frame);
+            this.evaluateExpression(key, frame);
+            return this.readElementSource(node.expression, this.evaluateExpression(node.expression, frame));
         }
-        if (ts.isCallExpression(node)) return this.call(node, frame);
+        if (ts.isCallExpression(node)) return this.evaluateCall(node, frame);
         if (ts.isNewExpression(node)) {
-            for (const argument of node.arguments ?? []) this.evaluate(argument, frame);
-            return "fixed";
+            for (const argument of node.arguments ?? []) this.evaluateExpression(argument, frame);
+            return "fresh";
         }
         if (ts.isParenthesizedExpression(node) || ts.isNonNullExpression(node) || ts.isSatisfiesExpression(node) || ts.isTypeAssertionExpression(node) || ts.isAwaitExpression(node)) {
-            return this.evaluate(node.expression, frame);
+            return this.evaluateExpression(node.expression, frame);
         }
         if (ts.isAsExpression(node)) {
             if (ts.isTypeReferenceNode(node.type) && ts.isIdentifier(node.type.typeName) && node.type.typeName.text === "live" && ts.isPropertyAccessExpression(node.expression)) {
-                // `x.y as live`: Tacet watches that one property on that one object.
-                this.evaluate(node.expression.expression, frame);
+                this.evaluateExpression(node.expression.expression, frame);
                 return "tracked";
             }
-            return this.evaluate(node.expression, frame);
+            return this.evaluateExpression(node.expression, frame);
         }
         if (ts.isConditionalExpression(node)) {
-            this.evaluate(node.condition, frame);
-            return merge(this.evaluate(node.whenTrue, frame), this.evaluate(node.whenFalse, frame));
+            this.evaluateExpression(node.condition, frame);
+            return mergeSources(this.evaluateExpression(node.whenTrue, frame), this.evaluateExpression(node.whenFalse, frame));
         }
         if (ts.isBinaryExpression(node)) {
             const operator = node.operatorToken.kind;
-            if (operator >= ts.SyntaxKind.FirstAssignment && operator <= ts.SyntaxKind.LastAssignment) {
-                this.write(node.left);
-                const right = this.evaluate(node.right, frame);
+            if (isAssignmentOperator(operator)) {
+                this.noteWrite(node.left);
+                const right = this.evaluateExpression(node.right, frame);
                 if (ts.isIdentifier(node.left)) {
                     const symbol = this.checker.getSymbolAtLocation(node.left);
                     if (symbol !== undefined && frame.locals.has(symbol)) frame.locals.set(symbol, right);
                 }
                 return right;
             }
-            const left = this.evaluate(node.left, frame);
-            const right = this.evaluate(node.right, frame);
-            if (operator === ts.SyntaxKind.QuestionQuestionToken || operator === ts.SyntaxKind.BarBarToken || operator === ts.SyntaxKind.AmpersandAmpersandToken) return merge(left, right);
+            const left = this.evaluateExpression(node.left, frame);
+            const right = this.evaluateExpression(node.right, frame);
+            if (operator === ts.SyntaxKind.QuestionQuestionToken || operator === ts.SyntaxKind.BarBarToken || operator === ts.SyntaxKind.AmpersandAmpersandToken) return mergeSources(left, right);
             if (operator === ts.SyntaxKind.CommaToken) return right;
             return "leaf";
         }
         if (ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node)) {
-            const operator = node.operator;
-            if (operator === ts.SyntaxKind.PlusPlusToken || operator === ts.SyntaxKind.MinusMinusToken) this.write(node.operand);
-            else this.evaluate(node.operand, frame);
+            if (isCountOperator(node.operator)) this.noteWrite(node.operand);
+            else this.evaluateExpression(node.operand, frame);
             return "leaf";
         }
         if (ts.isTypeOfExpression(node) || ts.isVoidExpression(node) || ts.isDeleteExpression(node)) {
-            if (!ts.isDeleteExpression(node)) this.evaluate(node.expression, frame);
+            if (!ts.isDeleteExpression(node)) this.evaluateExpression(node.expression, frame);
             return "leaf";
         }
         if (ts.isTemplateExpression(node)) {
-            for (const span of node.templateSpans) this.evaluate(span.expression, frame);
+            for (const span of node.templateSpans) this.evaluateExpression(span.expression, frame);
             return "leaf";
         }
         if (ts.isObjectLiteralExpression(node)) {
             for (const property of node.properties) {
                 if (ts.isPropertyAssignment(property)) {
-                    if (ts.isComputedPropertyName(property.name)) this.evaluate(property.name.expression, frame);
-                    this.evaluate(property.initializer, frame);
-                } else if (ts.isShorthandPropertyAssignment(property)) this.evaluate(property.name, frame);
-                else if (ts.isSpreadAssignment(property)) this.walkAll(property.expression, this.evaluate(property.expression, frame));
+                    if (ts.isComputedPropertyName(property.name)) this.evaluateExpression(property.name.expression, frame);
+                    this.evaluateExpression(property.initializer, frame);
+                } else if (ts.isShorthandPropertyAssignment(property)) this.evaluateExpression(property.name, frame);
+                else if (ts.isSpreadAssignment(property)) this.readWholeValue(property.expression, this.evaluateExpression(property.expression, frame));
             }
             return "fresh";
         }
         if (ts.isArrayLiteralExpression(node)) {
             for (const element of node.elements) {
-                if (ts.isSpreadElement(element)) this.elementSource(element.expression, this.evaluate(element.expression, frame));
-                else if (!ts.isOmittedExpression(element)) this.evaluate(element, frame);
+                if (ts.isSpreadElement(element)) this.readElementSource(element.expression, this.evaluateExpression(element.expression, frame));
+                else if (!ts.isOmittedExpression(element)) this.evaluateExpression(element, frame);
             }
             return "fresh";
         }
         if (isFunctionLike(node)) return "fixed";
-        if (ts.isSpreadElement(node)) return this.elementSource(node.expression, this.evaluate(node.expression, frame));
+        if (ts.isSpreadElement(node)) return this.readElementSource(node.expression, this.evaluateExpression(node.expression, frame));
         if (ts.isTaggedTemplateExpression(node)) {
-            for (const span of ts.isTemplateExpression(node.template) ? node.template.templateSpans : []) this.evaluate(span.expression, frame);
+            for (const span of ts.isTemplateExpression(node.template) ? node.template.templateSpans : []) this.evaluateExpression(span.expression, frame);
             return "leaf";
         }
-        if (ts.isYieldExpression(node) && node.expression !== undefined) return this.evaluate(node.expression, frame);
+        if (ts.isYieldExpression(node) && node.expression !== undefined) return this.evaluateExpression(node.expression, frame);
         return "leaf";
     }
 
-    /** The target of an assignment is written, not read. In a template, a write is an error. */
-    private write(target: ts.Expression): void {
-        if (this.template) this.report(target, `A template never writes a field: "${this.text(target)}". Go through a method of the view.`);
+    /** The target of an assignment is written, not read; in a template a write is an error. */
+    private noteWrite(target: ts.Expression): void {
+        if (this.template) this.reportError(target, `A template never writes a field: "${this.readText(target)}". Go through a method of the view.`);
     }
 
-    private declarationOf(symbol: ts.Symbol | undefined): ts.Declaration | undefined {
+    private findDeclaration(symbol: ts.Symbol | undefined): ts.Declaration | undefined {
         if (symbol === undefined) return undefined;
         if (symbol.flags & ts.SymbolFlags.Alias) symbol = this.checker.getAliasedSymbol(symbol);
         return symbol.valueDeclaration ?? symbol.declarations?.[0];
     }
 
-    private identifier(node: ts.Identifier, frame: Frame): Source {
+    private readIdentifier(node: ts.Identifier, frame: Frame): Source {
         const symbol = this.checker.getSymbolAtLocation(node);
         if (symbol === undefined) return "leaf";
         const local = frame.locals.get(symbol);
         if (local !== undefined) return local;
-        const declaration = this.declarationOf(symbol);
-        if (declaration === undefined || declaration.getSourceFile().isDeclarationFile) return "leaf";
-        if (ts.isVariableDeclaration(declaration)) {
-            const list = declaration.parent;
-            if (ts.isVariableDeclarationList(list) && (list.flags & ts.NodeFlags.Const) === 0 && !ts.isForOfStatement(list.parent) && !ts.isForInStatement(list.parent)) {
-                this.report(node, `"${node.text}" is a \`let\` that can change, and the getter would not follow it. Make it a const, or a marked field.`);
-                return "leaf";
-            }
-            if (declaration.initializer === undefined || this.stack.has(declaration)) return "fixed";
-            this.stack.add(declaration);
-            const source = this.evaluate(declaration.initializer, {locals: frame.locals, thisSource: "leaf"});
-            this.stack.delete(declaration);
-            return source === "fresh" ? "fixed" : source;
+        const declaration = this.findDeclaration(symbol);
+        if (declaration === undefined) return "leaf";
+        if (declaration.getSourceFile().isDeclarationFile) return PURE_GLOBALS.has(node.text) ? "leaf" : "fixed";
+        if (!ts.isVariableDeclaration(declaration)) return "fixed";
+        const list = declaration.parent;
+        if (ts.isVariableDeclarationList(list) && (list.flags & ts.NodeFlags.Const) === 0 && !ts.isForOfStatement(list.parent) && !ts.isForInStatement(list.parent)) {
+            this.reportError(node, `"${node.text}" is a \`let\` that can change, and ${this.nameReader()} would not follow it. Make it a const, or a marked field.`);
+            return "leaf";
         }
-        if (ts.isParameter(declaration)) return "fixed";
-        if (ts.isBindingElement(declaration)) return "fixed";
-        return "fixed";
+        if (declaration.initializer === undefined || this.stack.has(declaration)) return "fixed";
+        this.stack.add(declaration);
+        const source = this.evaluateExpression(declaration.initializer, {locals: frame.locals, thisSource: "leaf"});
+        this.stack.delete(declaration);
+        if (ts.isVariableDeclarationList(list) && ts.isVariableStatement(list.parent) && ts.isSourceFile(list.parent.parent) && !this.isWrittenConst(declaration)) return "fresh";
+        return source === "fresh" ? "fixed" : source;
+    }
+
+    /** A module-level const the script writes into is not a value; its file is scanned once. */
+    private isWrittenConst(declaration: ts.VariableDeclaration): boolean {
+        const known = this.writtenConsts.get(declaration);
+        if (known !== undefined) return known;
+        let written = false;
+        const visitNode = (node: ts.Node): void => {
+            if (written) return;
+            if (ts.isIdentifier(node) && node !== declaration.name && this.checker.getSymbolAtLocation(node)?.valueDeclaration === declaration) written = isWriteTarget(node);
+            else ts.forEachChild(node, visitNode);
+        };
+        visitNode(declaration.getSourceFile());
+        this.writtenConsts.set(declaration, written);
+        return written;
     }
 
     /** A read of `base.name`. */
-    private access(node: ts.Expression, base: ts.Expression, name: string, frame: Frame): Source {
-        const baseSource = this.evaluate(base, frame);
+    private readAccess(node: ts.Expression, base: ts.Expression, name: string, frame: Frame): Source {
+        const baseSource = this.evaluateExpression(base, frame);
         if (baseSource === "leaf") return "leaf";
         const baseType = this.checker.getTypeAtLocation(base);
         if (this.isLeafType(baseType)) return "leaf";
         const property = ts.isPropertyAccessExpression(node) ? this.checker.getSymbolAtLocation(node.name) : this.checker.getPropertyOfType(baseType.getNonNullableType(), name);
-        return this.member(node, base, baseSource, baseType, name, property, frame);
+        return this.readMember(node, base, baseSource, baseType, name, property);
     }
 
-    private member(node: ts.Node, base: ts.Expression, baseSource: Source, baseType: ts.Type, name: string, property: ts.Symbol | undefined, frame: Frame): Source {
-        const declaration = this.declarationOf(property);
-        const text = this.text(node);
-        if (declaration === undefined) {
-            // An index signature, or a name the type does not know: an element.
-            return this.elementSource(base, baseSource);
-        }
+    private readMember(node: ts.Node, base: ts.Expression, baseSource: Source, baseType: ts.Type, name: string, property: ts.Symbol | undefined): Source {
+        const declaration = this.findDeclaration(property);
+        if (property === undefined || declaration === undefined) return this.readElementSource(base, baseSource);
+        const text = this.readText(node);
         if (declaration.getSourceFile().isDeclarationFile) {
-            const container = this.containerName(baseType);
-            if (container === undefined) return "leaf";   // a library's object: a value
-            if (followed(baseSource) || READONLY_CONTAINERS.has(container)) {
-                const type = this.checker.getTypeOfSymbolAtLocation(property!, node);
-                if (type.getCallSignatures().length > 0) return "fixed";   // a method, to be called
-                return followed(baseSource) ? baseSource : "fixed";
+            const container = this.nameContainer(baseType);
+            if (container === undefined) {
+                if ((property.declarations ?? []).some(isObjectMember)) this.checkLibraryRead(node, text, baseSource, baseType);
+                return "leaf";
             }
-            this.report(node, `"${text}": "${name}" of ${container} can change by mutation, and ${baseSource === "tracked" ? "@live follows the field's value, not what is inside it" : "it is not followed"}. Mark the field @deep, or type it Readonly${container}.`);
+            if (isFollowed(baseSource) || READONLY_CONTAINERS.has(container)) {
+                const type = this.checker.getTypeOfSymbolAtLocation(property, node);
+                if (type.getCallSignatures().length > 0) return "fixed";
+                return isFollowed(baseSource) ? baseSource : "fixed";
+            }
+            this.reportError(node, `"${text}": "${name}" of ${container} can change by mutation, and ${baseSource === "tracked" ? "@live follows the field's value, not what is inside it" : "it is not followed"}. Mark the field @deep, or type it Readonly${container}.`);
             return "leaf";
         }
-        if (isClassClassMember(declaration)) {
+        if (isClassMember(declaration)) {
             const owner = (declaration.parent as ts.ClassLikeDeclaration).name?.text ?? "the class";
             if (ts.isPropertyDeclaration(declaration)) {
-                const mark = markOf(declaration);
-                if (mark === "live") { this.note(declaration); return "tracked"; }
-                if (mark === "deep") { this.note(declaration); return "deep"; }
+                const mark = readMark(declaration);
+                if (mark === "live") { this.noteRead(declaration); return "tracked"; }
+                if (mark === "deep") { this.noteRead(declaration); return "deep"; }
                 if (hasModifier(declaration, ts.SyntaxKind.ReadonlyKeyword)) return "fixed";
-                this.report(node, `"${text}": "${name}" is a plain field of ${owner} that can change, and ${this.template ? "the screen" : "the getter"} would not follow it. Mark it @live or @deep, or make it readonly.`);
+                this.reportError(node, `"${text}": "${name}" is a plain field of ${owner} that can change, and ${this.nameReader()} would not follow it. Mark it @live or @deep, or make it readonly.`);
                 return "leaf";
             }
             if (ts.isGetAccessorDeclaration(declaration)) {
-                if (markOf(declaration) === "live") {
-                    this.note(declaration);
-                    const result = this.getterResult(declaration);
-                    return followed(result) || result === "leaf" ? result : "tracked";
+                if (readMark(declaration) === "live") {
+                    this.noteRead(declaration);
+                    return this.evaluateGetter(declaration);
                 }
                 if (declaration.body === undefined) {
-                    this.report(node, `"${text}": a getter the build cannot see into.`);
+                    this.reportError(node, `"${text}": a getter the build cannot see into.`);
                     return "leaf";
                 }
-                return this.follow(declaration, declaration.body, [], {locals: new Map(), thisSource: "fixed"}, node);
+                return this.followBody(declaration, declaration.body, [], {locals: new Map(), thisSource: "fixed"});
             }
-            if (ts.isMethodDeclaration(declaration)) return "fixed";
             return "fixed";
         }
-        // A property of a plain object type: an interface, a type literal, an object literal.
-        if (followed(baseSource)) return baseSource;
+        if (isFollowed(baseSource)) return baseSource;
         if (ts.isMethodSignature(declaration) || (ts.isPropertySignature(declaration) && declaration.type !== undefined && ts.isFunctionTypeNode(declaration.type))) return "fixed";
-        if (property !== undefined && this.readonlyProperty(property)) return "fixed";
+        if (this.isReadonlyProperty(property, baseType)) return "fixed";
         const why = baseSource === "tracked" ? "@live follows the field's value, not what is inside it" : "the object is not followed";
-        this.report(node, `"${text}": "${name}" is a plain property that can change by mutation, and ${why}. Hold the object in a @deep field, or declare "${name}" readonly.`);
+        this.reportError(node, `"${text}": "${name}" is a plain property that can change by mutation, and ${why}. Hold the object in a @deep field, or declare "${name}" readonly.`);
         return "leaf";
     }
 
-    // -- calls ---------------------------------------------------------------
-
-    private call(node: ts.CallExpression, frame: Frame): Source {
+    private evaluateCall(node: ts.CallExpression, frame: Frame): Source {
         const callee = node.expression;
         if (ts.isIdentifier(callee)) {
-            if (callee.text === "__each") return this.elementSource(node.arguments[0], this.evaluate(node.arguments[0], frame));
+            if (callee.text === "__each") return this.readElementSource(node.arguments[0], this.evaluateExpression(node.arguments[0], frame));
             if (callee.text === "__event" && isFunctionLike(node.arguments[0])) {
-                this.walkWrites(node.arguments[0].body);
+                this.checkHandlerWrites(node.arguments[0].body);
                 return "leaf";
             }
-            const local = this.checker.getSymbolAtLocation(callee);
-            const declaration = this.declarationOf(local);
-            const arguments_ = this.argumentSources(node, frame);
-            if (declaration === undefined || declaration.getSourceFile().isDeclarationFile) return this.libraryCall(node, arguments_, frame);
-            if (ts.isFunctionDeclaration(declaration) && declaration.body !== undefined) return this.follow(declaration, declaration.body, arguments_, {locals: new Map(), thisSource: "leaf"}, node, declaration.parameters);
+            if (callee.text === "__ref") {
+                this.checkRefTarget(node.arguments[0], frame);
+                return "leaf";
+            }
+            const declaration = this.findDeclaration(this.checker.getSymbolAtLocation(callee));
+            if (declaration === undefined || declaration.getSourceFile().isDeclarationFile) return this.evaluateLibraryCall(node, frame);
+            const sources = this.evaluateArguments(node, frame);
+            if (ts.isFunctionDeclaration(declaration) && declaration.body !== undefined) return this.followBody(declaration, declaration.body, sources, {locals: new Map(), thisSource: "leaf"}, declaration.parameters);
             if (ts.isVariableDeclaration(declaration) && declaration.initializer !== undefined && isFunctionLike(declaration.initializer)) {
                 const fn = declaration.initializer;
-                return this.follow(fn, fn.body, arguments_, {locals: new Map(), thisSource: "leaf"}, node, fn.parameters);
+                return this.followBody(fn, fn.body, sources, {locals: new Map(), thisSource: "leaf"}, fn.parameters);
             }
-            if (ts.isClassLike(declaration)) return "fixed";
-            this.report(node, `"${this.text(callee)}()": a call the build cannot see through (a function passed by reference). Call a function of this module or a method of the class instead.`);
+            this.reportError(node, `"${this.readText(callee)}()": a call the build cannot see through (a function passed by reference). Call a function of this module or a method of the class instead.`);
             return "leaf";
         }
         if (isFunctionLike(callee) || (ts.isParenthesizedExpression(callee) && isFunctionLike(callee.expression))) {
             const fn = isFunctionLike(callee) ? callee : callee.expression as ts.ArrowFunction | ts.FunctionExpression;
-            return this.follow(fn, fn.body, this.argumentSources(node, frame), frame, node, fn.parameters);
+            return this.followBody(fn, fn.body, this.evaluateArguments(node, frame), frame, fn.parameters);
         }
         if (ts.isPropertyAccessExpression(callee) || (ts.isElementAccessExpression(callee) && ts.isStringLiteralLike(callee.argumentExpression))) {
             const base = callee.expression;
             const name = ts.isPropertyAccessExpression(callee) ? callee.name.text : (callee.argumentExpression as ts.StringLiteralLike).text;
-            const baseSource = this.evaluate(base, frame);
+            const baseSource = this.evaluateExpression(base, frame);
             const baseType = this.checker.getTypeAtLocation(base);
             const property = ts.isPropertyAccessExpression(callee) ? this.checker.getSymbolAtLocation(callee.name) : this.checker.getPropertyOfType(baseType.getNonNullableType(), name);
-            const declaration = this.declarationOf(property);
-            const container = this.containerName(baseType);
-            if (container !== undefined && declaration?.getSourceFile().isDeclarationFile) return this.containerCall(node, base, baseSource, name, container, frame);
-            if (baseSource === "leaf" || this.isLeafType(baseType) || declaration === undefined || declaration.getSourceFile().isDeclarationFile) {
-                const qualified = `${this.text(base)}.${name}`;
-                const arguments_ = this.argumentSources(node, frame);
-                if (WALKERS.has(qualified) && node.arguments.length > 0) {
-                    this.walkAll(node.arguments[0], arguments_[0]);
-                    return name === "keys" || name === "stringify" ? "leaf" : arguments_[0];
-                }
-                return "leaf";
+            const declaration = this.findDeclaration(property);
+            if (baseSource === "leaf" || this.isLeafType(baseType) || property === undefined || declaration === undefined) return this.evaluateLibraryCall(node, frame);
+            if (declaration.getSourceFile().isDeclarationFile) {
+                const container = this.nameContainer(baseType);
+                if (container !== undefined) return this.evaluateContainerCall(node, base, baseSource, name, container, frame);
+                if ((property.declarations ?? []).some(isObjectMember)) this.checkLibraryRead(callee, `${this.readText(callee)}()`, baseSource, baseType);
+                return this.evaluateLibraryCall(node, frame);
             }
-            const arguments_ = this.argumentSources(node, frame);
-            if (isClassClassMember(declaration)) {
+            const sources = this.evaluateArguments(node, frame);
+            if (isClassMember(declaration)) {
                 if (ts.isMethodDeclaration(declaration) && declaration.body !== undefined) {
-                    return this.follow(declaration, declaration.body, arguments_, {locals: new Map(), thisSource: "fixed"}, node, declaration.parameters);
+                    return this.followBody(declaration, declaration.body, sources, {locals: new Map(), thisSource: "fixed"}, declaration.parameters);
                 }
                 if (ts.isPropertyDeclaration(declaration) && declaration.initializer !== undefined && isFunctionLike(declaration.initializer)) {
                     const fn = declaration.initializer;
-                    return this.follow(fn, fn.body, arguments_, {locals: new Map(), thisSource: "fixed"}, node, fn.parameters);
+                    return this.followBody(fn, fn.body, sources, {locals: new Map(), thisSource: "fixed"}, fn.parameters);
                 }
-                if (ts.isGetAccessorDeclaration(declaration)) {
-                    const result = this.member(callee, base, baseSource, baseType, name, property, frame);
-                    return result;
-                }
-                this.report(node, `"${this.text(callee)}()": a call the build cannot see through (${ts.isMethodDeclaration(declaration) ? "a method with no body" : "a function held in a field"}). Give the class a method with a body, or read the fields directly.`);
+                if (ts.isGetAccessorDeclaration(declaration)) return this.readMember(callee, base, baseSource, baseType, name, property);
+                this.reportError(node, `"${this.readText(callee)}()": a call the build cannot see through (${ts.isMethodDeclaration(declaration) ? "a method with no body" : "a function held in a field"}). Give the class a method with a body, or read the fields directly.`);
                 return "leaf";
             }
-            this.report(node, `"${this.text(callee)}()": a call the build cannot see through (a method on an interface). Give it a class with the method's body, or read the fields directly.`);
+            this.reportError(node, `"${this.readText(callee)}()": a call the build cannot see through (a method on an interface). Give it a class with the method's body, or read the fields directly.`);
             return "leaf";
         }
-        this.evaluate(callee, frame);
-        this.argumentSources(node, frame);
-        this.report(node, `"${this.text(callee)}()": a call the build cannot see through.`);
+        this.evaluateExpression(callee, frame);
+        this.evaluateArguments(node, frame);
+        this.reportError(node, `"${this.readText(callee)}()": a call the build cannot see through.`);
         return "leaf";
     }
 
-    private argumentSources(node: ts.CallExpression, frame: Frame): Source[] {
-        return node.arguments.map(argument => isFunctionLike(argument) ? "fixed" : this.evaluate(argument, frame));
+    private evaluateArguments(node: ts.CallExpression, frame: Frame): Source[] {
+        return node.arguments.map(argument => isFunctionLike(argument) ? "fixed" : this.evaluateExpression(argument, frame));
     }
 
-    private libraryCall(node: ts.CallExpression, arguments_: Source[], frame: Frame): Source {
-        // A global function (String, Number, parseInt, structuredClone): a leaf, its arguments checked.
-        const name = this.text(node.expression);
-        if (WALKERS.has(name) && node.arguments.length > 0) this.walkAll(node.arguments[0], arguments_[0]);
-        for (const argument of node.arguments) if (isFunctionLike(argument)) this.callback(argument, [], frame);
-        return "leaf";
+    /** A call into a library: a leaf, its arguments read, its callbacks followed with nothing bound, a walker's argument read whole. */
+    private evaluateLibraryCall(node: ts.CallExpression, frame: Frame): Source {
+        const sources = this.evaluateArguments(node, frame);
+        for (const argument of node.arguments) if (isFunctionLike(argument)) this.followCallback(argument, [], frame);
+        const name = this.readText(node.expression);
+        if (!WALKERS.has(name) || node.arguments.length === 0) return "leaf";
+        this.readWholeValue(node.arguments[0], sources[0]);
+        return WALKER_RESULTS.has(name) ? sources[0] : "leaf";
     }
 
     /** A method of an array, a Map or a Set. */
-    private containerCall(node: ts.CallExpression, base: ts.Expression, baseSource: Source, name: string, container: string, frame: Frame): Source {
-        const ok = baseSource === "leaf" || followed(baseSource) || READONLY_CONTAINERS.has(container);
+    private evaluateContainerCall(node: ts.CallExpression, base: ts.Expression, baseSource: Source, name: string, container: string, frame: Frame): Source {
+        const ok = baseSource === "leaf" || isFollowed(baseSource) || READONLY_CONTAINERS.has(container);
         if (!ok) {
-            this.report(node.expression, `"${this.text(node.expression)}": "${name}" reads ${container === "Array" ? "an array" : "a " + container} that can change by mutation, and ${baseSource === "tracked" ? "@live follows the field's value, not what is inside it" : "it is not followed"}. Mark the field @deep, or type it Readonly${container}.`);
+            this.reportError(node.expression, `"${this.readText(node.expression)}": "${name}" reads ${container === "Array" ? "an array" : "a " + container} that can change by mutation, and ${baseSource === "tracked" ? "@live follows the field's value, not what is inside it" : "it is not followed"}. Mark the field @deep, or type it Readonly${container}.`);
         }
-        const element = ok ? this.elementSource(base, baseSource) : "leaf";
+        const element = ok ? this.readElementSource(base, baseSource) : "leaf";
         const slots = CALLBACK_ELEMENTS[name] ?? [];
         for (const argument of node.arguments) {
-            if (isFunctionLike(argument)) this.callback(argument, slots.map(() => element), frame, slots);
-            else this.evaluate(argument, frame);
+            if (isFunctionLike(argument)) this.followCallback(argument, slots.map(() => element), frame, slots);
+            else this.evaluateExpression(argument, frame);
         }
         if (!ok) return "leaf";
         return ELEMENT_RESULTS.has(name) ? element : "leaf";
     }
 
-    private callback(fn: ts.ArrowFunction | ts.FunctionExpression, elements: Source[], frame: Frame, slots: number[] = []): void {
+    private followCallback(fn: ts.ArrowFunction | ts.FunctionExpression, elements: Source[], frame: Frame, slots: number[] = []): void {
         const sources: Source[] = fn.parameters.map((_, index) => slots.includes(index) ? elements[slots.indexOf(index)] : "leaf");
-        this.follow(fn, fn.body, sources, frame, fn, fn.parameters);
+        this.followBody(fn, fn.body, sources, frame, fn.parameters);
     }
 
     /** Follows a body with its parameters bound; returns what it returns. */
-    private follow(key: ts.Node, body: ts.ConciseBody, arguments_: Source[], outer: Frame, at: ts.Node, parameters: readonly ts.ParameterDeclaration[] = []): Source {
+    private followBody(key: ts.Node, body: ts.ConciseBody, sources: Source[], outer: Frame, parameters: readonly ts.ParameterDeclaration[] = []): Source {
         if (this.stack.has(key)) return "fixed";
         this.stack.add(key);
         const frame: Frame = {locals: new Map(outer.locals), thisSource: outer.thisSource};
         parameters.forEach((parameter, index) => {
-            const source = parameter.dotDotDotToken ? "fresh" : arguments_[index] ?? (parameter.initializer !== undefined ? this.evaluate(parameter.initializer, frame) : "leaf");
-            this.bind(parameter.name, source, frame, parameter);
+            const source = parameter.dotDotDotToken ? "fresh" : sources[index] ?? (parameter.initializer !== undefined ? this.evaluateExpression(parameter.initializer, frame) : "leaf");
+            this.bindPattern(parameter.name, source, frame);
         });
         let result: Source;
         if (ts.isBlock(body)) {
             const returns: Source[] = [];
-            this.statements(body.statements, frame, returns);
-            result = returns.length === 0 ? "leaf" : returns.reduce(merge);
+            this.checkStatements(body.statements, frame, returns);
+            result = returns.length === 0 ? "leaf" : returns.reduce(mergeSources);
         } else {
-            result = this.evaluate(body, frame);
+            result = this.evaluateExpression(body, frame);
         }
         this.stack.delete(key);
-        return result === "fresh" ? "fresh" : result;
+        return result;
     }
 
-    private bind(name: ts.BindingName, source: Source, frame: Frame, at: ts.Node): void {
+    private bindPattern(name: ts.BindingName, source: Source, frame: Frame): void {
         if (ts.isIdentifier(name)) {
             const symbol = this.checker.getSymbolAtLocation(name);
             if (symbol !== undefined) frame.locals.set(symbol, source);
@@ -519,105 +560,114 @@ class Analysis {
                 const key = element.propertyName ?? element.name;
                 const keyText = ts.isIdentifier(key) ? key.text : ts.isStringLiteral(key) ? key.text : undefined;
                 if (element.dotDotDotToken || keyText === undefined || source === "leaf" || this.isLeafType(type)) inner = source === "leaf" ? "leaf" : "fixed";
-                else {
-                    const property = this.checker.getPropertyOfType(type.getNonNullableType(), keyText);
-                    inner = this.memberFromPattern(element, source, type, keyText, property, frame);
-                }
+                else inner = this.readPatternMember(element, source, type, keyText);
             } else {
-                inner = source === "leaf" || followed(source) ? source : "fixed";
+                inner = source === "leaf" || isFollowed(source) ? source : "fixed";
             }
-            if (element.initializer !== undefined) inner = merge(inner, this.evaluate(element.initializer, frame));
-            this.bind(element.name, inner, frame, element);
+            if (element.initializer !== undefined) inner = mergeSources(inner, this.evaluateExpression(element.initializer, frame));
+            this.bindPattern(element.name, inner, frame);
         }
     }
 
-    private memberFromPattern(element: ts.BindingElement, source: Source, type: ts.Type, name: string, property: ts.Symbol | undefined, frame: Frame): Source {
-        const declaration = this.declarationOf(property);
-        if (declaration === undefined || declaration.getSourceFile().isDeclarationFile) return followed(source) ? source : "fixed";
-        if (isClassClassMember(declaration) && ts.isPropertyDeclaration(declaration)) {
-            const mark = markOf(declaration);
-            if (mark === "live") { this.note(declaration); return "tracked"; }
-            if (mark === "deep") { this.note(declaration); return "deep"; }
+    private readPatternMember(element: ts.BindingElement, source: Source, type: ts.Type, name: string): Source {
+        const property = this.checker.getPropertyOfType(type.getNonNullableType(), name);
+        const declaration = this.findDeclaration(property);
+        if (property === undefined || declaration === undefined || declaration.getSourceFile().isDeclarationFile) return isFollowed(source) ? source : "fixed";
+        if (isClassMember(declaration) && ts.isPropertyDeclaration(declaration)) {
+            const mark = readMark(declaration);
+            if (mark === "live") { this.noteRead(declaration); return "tracked"; }
+            if (mark === "deep") { this.noteRead(declaration); return "deep"; }
             if (hasModifier(declaration, ts.SyntaxKind.ReadonlyKeyword)) return "fixed";
-            this.report(element, `"${name}" is a plain field that can change, and ${this.template ? "the screen" : "the getter"} would not follow it. Mark it @live or @deep, or make it readonly.`);
+            this.reportError(element, `"${name}" is a plain field that can change, and ${this.nameReader()} would not follow it. Mark it @live or @deep, or make it readonly.`);
             return "leaf";
         }
-        if (followed(source) || (property !== undefined && this.readonlyProperty(property))) return followed(source) ? source : "fixed";
-        this.report(element, `"${name}" is a plain property that can change by mutation, and the object is not followed. Hold the object in a @deep field, or declare "${name}" readonly.`);
+        if (isFollowed(source)) return source;
+        if (this.isReadonlyProperty(property, type)) return "fixed";
+        this.reportError(element, `"${name}" is a plain property that can change by mutation, and the object is not followed. Hold the object in a @deep field, or declare "${name}" readonly.`);
         return "leaf";
     }
 
-    // -- statements ----------------------------------------------------------
-
-    private statements(list: readonly ts.Statement[], frame: Frame, returns: Source[]): void {
-        for (const statement of list) this.statement(statement, frame, returns);
+    private checkStatements(list: readonly ts.Statement[], frame: Frame, returns: Source[]): void {
+        for (const statement of list) this.checkStatement(statement, frame, returns);
     }
 
-    private statement(node: ts.Statement, frame: Frame, returns: Source[]): void {
+    private checkStatement(node: ts.Statement, frame: Frame, returns: Source[]): void {
         if (ts.isVariableStatement(node)) {
             for (const declaration of node.declarationList.declarations) {
-                const source = declaration.initializer === undefined ? "leaf" : this.evaluate(declaration.initializer, frame);
-                this.bind(declaration.name, source, frame, declaration);
+                const source = declaration.initializer === undefined ? "leaf" : this.evaluateExpression(declaration.initializer, frame);
+                this.bindPattern(declaration.name, source, frame);
             }
-        } else if (ts.isExpressionStatement(node)) this.evaluate(node.expression, frame);
-        else if (ts.isReturnStatement(node)) returns.push(node.expression === undefined ? "leaf" : this.evaluate(node.expression, frame));
-        else if (ts.isBlock(node)) this.statements(node.statements, {locals: new Map(frame.locals), thisSource: frame.thisSource}, returns);
+        } else if (ts.isExpressionStatement(node)) this.evaluateExpression(node.expression, frame);
+        else if (ts.isReturnStatement(node)) returns.push(node.expression === undefined ? "leaf" : this.evaluateExpression(node.expression, frame));
+        else if (ts.isBlock(node)) this.checkStatements(node.statements, {locals: new Map(frame.locals), thisSource: frame.thisSource}, returns);
         else if (ts.isIfStatement(node)) {
-            this.evaluate(node.expression, frame);
-            this.statement(node.thenStatement, frame, returns);
-            if (node.elseStatement !== undefined) this.statement(node.elseStatement, frame, returns);
+            this.evaluateExpression(node.expression, frame);
+            this.checkStatement(node.thenStatement, frame, returns);
+            if (node.elseStatement !== undefined) this.checkStatement(node.elseStatement, frame, returns);
         } else if (ts.isForOfStatement(node)) {
             const each = ts.isCallExpression(node.expression) && ts.isIdentifier(node.expression.expression) && node.expression.expression.text === "__each" ? node.expression.arguments[0] : node.expression;
-            const element = this.elementSource(each, this.evaluate(each, frame));
+            const element = this.readElementSource(each, this.evaluateExpression(each, frame));
             const inner: Frame = {locals: new Map(frame.locals), thisSource: frame.thisSource};
-            if (ts.isVariableDeclarationList(node.initializer)) this.bind(node.initializer.declarations[0].name, element, inner, node.initializer);
-            this.statement(node.statement, inner, returns);
+            if (ts.isVariableDeclarationList(node.initializer)) this.bindPattern(node.initializer.declarations[0].name, element, inner);
+            this.checkStatement(node.statement, inner, returns);
         } else if (ts.isForInStatement(node)) {
-            this.walkAll(node.expression, this.evaluate(node.expression, frame));
+            this.readWholeValue(node.expression, this.evaluateExpression(node.expression, frame));
             const inner: Frame = {locals: new Map(frame.locals), thisSource: frame.thisSource};
-            if (ts.isVariableDeclarationList(node.initializer)) this.bind(node.initializer.declarations[0].name, "leaf", inner, node.initializer);
-            this.statement(node.statement, inner, returns);
+            if (ts.isVariableDeclarationList(node.initializer)) this.bindPattern(node.initializer.declarations[0].name, "leaf", inner);
+            this.checkStatement(node.statement, inner, returns);
         } else if (ts.isForStatement(node)) {
             const inner: Frame = {locals: new Map(frame.locals), thisSource: frame.thisSource};
             if (node.initializer !== undefined) {
                 if (ts.isVariableDeclarationList(node.initializer)) {
-                    for (const declaration of node.initializer.declarations) this.bind(declaration.name, declaration.initializer === undefined ? "leaf" : this.evaluate(declaration.initializer, inner), inner, declaration);
-                } else this.evaluate(node.initializer, inner);
+                    for (const declaration of node.initializer.declarations) this.bindPattern(declaration.name, declaration.initializer === undefined ? "leaf" : this.evaluateExpression(declaration.initializer, inner), inner);
+                } else this.evaluateExpression(node.initializer, inner);
             }
-            if (node.condition !== undefined) this.evaluate(node.condition, inner);
-            if (node.incrementor !== undefined) this.evaluate(node.incrementor, inner);
-            this.statement(node.statement, inner, returns);
+            if (node.condition !== undefined) this.evaluateExpression(node.condition, inner);
+            if (node.incrementor !== undefined) this.evaluateExpression(node.incrementor, inner);
+            this.checkStatement(node.statement, inner, returns);
         } else if (ts.isWhileStatement(node) || ts.isDoStatement(node)) {
-            this.evaluate(node.expression, frame);
-            this.statement(node.statement, frame, returns);
+            this.evaluateExpression(node.expression, frame);
+            this.checkStatement(node.statement, frame, returns);
         } else if (ts.isSwitchStatement(node)) {
-            this.evaluate(node.expression, frame);
+            this.evaluateExpression(node.expression, frame);
             for (const clause of node.caseBlock.clauses) {
-                if (ts.isCaseClause(clause)) this.evaluate(clause.expression, frame);
-                this.statements(clause.statements, frame, returns);
+                if (ts.isCaseClause(clause)) this.evaluateExpression(clause.expression, frame);
+                this.checkStatements(clause.statements, frame, returns);
             }
         } else if (ts.isTryStatement(node)) {
-            this.statement(node.tryBlock, frame, returns);
-            if (node.catchClause !== undefined) this.statement(node.catchClause.block, frame, returns);
-            if (node.finallyBlock !== undefined) this.statement(node.finallyBlock, frame, returns);
-        } else if (ts.isThrowStatement(node)) this.evaluate(node.expression, frame);
-        else if (ts.isLabeledStatement(node)) this.statement(node.statement, frame, returns);
+            this.checkStatement(node.tryBlock, frame, returns);
+            if (node.catchClause !== undefined) this.checkStatement(node.catchClause.block, frame, returns);
+            if (node.finallyBlock !== undefined) this.checkStatement(node.finallyBlock, frame, returns);
+        } else if (ts.isThrowStatement(node)) this.evaluateExpression(node.expression, frame);
+        else if (ts.isLabeledStatement(node)) this.checkStatement(node.statement, frame, returns);
     }
 
     /** In a template's event handler only the writes matter: the handler runs on an event, not on a redraw. */
-    private walkWrites(node: ts.Node): void {
-        const visit = (child: ts.Node): void => {
-            if (ts.isBinaryExpression(child) && child.operatorToken.kind >= ts.SyntaxKind.FirstAssignment && child.operatorToken.kind <= ts.SyntaxKind.LastAssignment) this.write(child.left);
-            else if ((ts.isPrefixUnaryExpression(child) || ts.isPostfixUnaryExpression(child)) && (child.operator === ts.SyntaxKind.PlusPlusToken || child.operator === ts.SyntaxKind.MinusMinusToken)) this.write(child.operand);
-            ts.forEachChild(child, visit);
+    private checkHandlerWrites(node: ts.Node): void {
+        const visitNode = (child: ts.Node): void => {
+            if (ts.isBinaryExpression(child) && isAssignmentOperator(child.operatorToken.kind)) this.noteWrite(child.left);
+            else if ((ts.isPrefixUnaryExpression(child) || ts.isPostfixUnaryExpression(child)) && isCountOperator(child.operator)) this.noteWrite(child.operand);
+            ts.forEachChild(child, visitNode);
         };
-        visit(node);
+        visitNode(node);
     }
 
-    // -- entry points --------------------------------------------------------
+    /** `ref="view.box"` hands the element to a field of the view, which must exist and be plain: unmarked, writable, no getter. */
+    private checkRefTarget(target: ts.Expression, frame: Frame): void {
+        if (!ts.isPropertyAccessExpression(target)) return;
+        this.evaluateExpression(target.expression, frame);
+        const attribute = `ref="${this.readText(target)}"`;
+        const name = target.name.text;
+        const ownerType = this.checker.getTypeAtLocation(target.expression).getNonNullableType();
+        const declaration = this.findDeclaration(this.checker.getPropertyOfType(ownerType, name));
+        if (declaration === undefined) this.reportError(target, `${attribute}: ${this.checker.typeToString(ownerType)} has no field "${name}". The element goes into a plain field of the view; declare it.`);
+        else if (!isClassMember(declaration) || !ts.isPropertyDeclaration(declaration)) this.reportError(target, `${attribute}: "${name}" is not a field. The element goes into a plain field of the view, never a getter or a method.`);
+        else if (readMark(declaration) !== undefined) this.reportError(target, `${attribute}: "${name}" is marked @${readMark(declaration)}. The element goes into a plain field of the view, never a marked one.`);
+        else if (hasModifier(declaration, ts.SyntaxKind.ReadonlyKeyword)) this.reportError(target, `${attribute}: "${name}" is readonly, and the element is written into it when it is drawn and removed. Make it a plain field.`);
+    }
 
     /** Checks a live getter once; returns what it returns. */
-    public getterResult(getter: ts.GetAccessorDeclaration): Source {
+    public evaluateGetter(getter: ts.GetAccessorDeclaration): Source {
         const known = this.getterResults.get(getter);
         if (known !== undefined) return known;
         if (getter.body === undefined || this.stack.has(getter)) return "fixed";
@@ -627,8 +677,8 @@ class Analysis {
         this.current = new Set();
         this.getterReads.set(getter, this.current);
         const returns: Source[] = [];
-        this.statements(getter.body.statements, {locals: new Map(), thisSource: "fixed"}, returns);
-        const result = returns.length === 0 ? "leaf" : returns.reduce(merge);
+        this.checkStatements(getter.body.statements, {locals: new Map(), thisSource: "fixed"}, returns);
+        const result = returns.length === 0 ? "leaf" : returns.reduce(mergeSources);
         this.stack.delete(getter);
         this.template = outer.template;
         this.current = outer.current;
@@ -637,37 +687,29 @@ class Analysis {
     }
 
     /** Everything the templates read, through the live getters they read. */
-    public allReads(): Set<ts.Declaration> {
+    public collectReads(): Set<ts.Declaration> {
         const all = new Set<ts.Declaration>();
-        const visit = (declaration: ts.Declaration): void => {
+        const visitDeclaration = (declaration: ts.Declaration): void => {
             if (all.has(declaration)) return;
             all.add(declaration);
-            for (const inner of this.getterReads.get(declaration) ?? []) visit(inner);
+            for (const inner of this.getterReads.get(declaration) ?? []) visitDeclaration(inner);
         };
-        for (const declaration of this.reads) visit(declaration);
+        for (const declaration of this.reads) visitDeclaration(declaration);
         return all;
     }
 
     public checkTemplate(block: ts.Block): void {
         this.template = true;
-        this.statements(block.statements, {locals: new Map(), thisSource: "leaf"}, []);
+        this.checkStatements(block.statements, {locals: new Map(), thisSource: "leaf"}, []);
         this.template = false;
     }
 }
 
-function isClassClassMember(node: ts.Node): boolean {
-    return isClassMember(node);
-}
-
-// ---------------------------------------------------------------------------
-// A .tacet template, written as TypeScript statements after its script.
-// ---------------------------------------------------------------------------
-
-interface Virtual {
+/** A .tacet template written as TypeScript statements after its script, with each expression's place in the .tacet file. */
+interface VirtualFile {
     name: string;
     tacet: string;
     code: string;
-    /** Each emitted expression: where it sits in the virtual file, and in the .tacet file. */
     ranges: {from: number; to: number; offset: number}[];
     templateStart: number;
     /** An error from Vue's parser or a v-model, reported as it is. */
@@ -679,22 +721,23 @@ type __Item<T> = T extends readonly (infer U)[] ? U : T extends number ? number 
 type __Key<T> = T extends readonly unknown[] | number | string | Iterable<unknown> ? number : T extends object ? keyof T : never;
 declare function __each<T>(items: T): readonly (readonly [__Item<T>, __Key<T>, number])[];
 declare function __event(handler: ($event: any) => unknown): void;
+declare function __ref(field: unknown): void;
 declare const $event: any, $attrs: any, $slots: any, $refs: any, $el: any, $props: any, $emit: any, $nextTick: any;
 `;
+/** A static `ref` whose value is a path into an object, the form `src/files.ts` rewrites into an assignment. */
+const REF_PATH = /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+$/;
 
-function lineColumn(source: string, offset: number): {line: number; column: number} {
+function findLineColumn(source: string, offset: number): {line: number; column: number} {
     const before = source.slice(0, offset);
-    const line = before.split("\n").length;
-    const column = offset - before.lastIndexOf("\n");
-    return {line, column};
+    return {line: before.split("\n").length, column: offset - before.lastIndexOf("\n")};
 }
 
-function virtualFor(tacet: string, source: string): Virtual {
+function buildVirtualFile(tacet: string, source: string): VirtualFile {
     const {descriptor, errors} = parseSfc(source, {filename: tacet});
     const diagnostics: Diagnostic[] = [];
-    const virtual: Virtual = {name: tacet + ".ts", tacet, code: "", ranges: [], templateStart: 0, diagnostics};
+    const virtual: VirtualFile = {name: tacet + ".ts", tacet, code: "", ranges: [], templateStart: 0, diagnostics};
     for (const error of errors) {
-        const at = "loc" in error && error.loc !== undefined ? lineColumn(source, error.loc.start.offset) : {line: 1, column: 1};
+        const at = "loc" in error && error.loc !== undefined ? findLineColumn(source, error.loc.start.offset) : {line: 1, column: 1};
         diagnostics.push({file: tacet, ...at, level: "error", message: error.message});
     }
     const script = descriptor.scriptSetup ?? descriptor.script;
@@ -704,7 +747,6 @@ function virtualFor(tacet: string, source: string): Virtual {
     if (script !== null) {
         parts.push(script.content);
         try {
-            // The build makes every script a `<script setup>`; Vue reads the props only from one.
             let setup = descriptor;
             if (descriptor.scriptSetup === null) {
                 const open = source.lastIndexOf("<script", script.loc.start.offset);
@@ -723,28 +765,30 @@ function virtualFor(tacet: string, source: string): Virtual {
         parts.push(`type __Props = ${propsType};`);
         for (const name of propNames) parts.push(`declare const ${name}: __Props[${JSON.stringify(name)}];`);
     }
-    let code = parts.join("\n") + "\n";
+    const code = parts.join("\n") + "\n";
     virtual.templateStart = code.length;
     const out: string[] = [];
     let length = code.length;
-    const emit = (text: string): void => { out.push(text); length += text.length; };
+    const emitText = (text: string): void => { out.push(text); length += text.length; };
+    const emitRead = (content: string, offset: number, prefix: string, suffix: string): void => {
+        emitText(prefix);
+        virtual.ranges.push({from: length, to: length + content.length, offset});
+        emitText(content);
+        emitText(suffix);
+    };
     const emitExpression = (expression: ExpressionNode, prefix: string, suffix: string): void => {
-        if (expression.type !== 4 /* SIMPLE_EXPRESSION */) return;
-        emit(prefix);
-        virtual.ranges.push({from: length, to: length + expression.content.length, offset: expression.loc.start.offset});
-        emit(expression.content);
-        emit(suffix);
+        if (expression.type === 4 /* SIMPLE_EXPRESSION */) emitRead(expression.content, expression.loc.start.offset, prefix, suffix);
     };
 
-    const walk = (children: TemplateChildNode[]): void => {
+    const emitChildren = (children: TemplateChildNode[]): void => {
         for (let index = 0; index < children.length; index++) {
             const child = children[index];
             if (child.type === 5 /* INTERPOLATION */) emitExpression(child.content, "void (", ");\n");
-            else if (child.type === 1 /* ELEMENT */) index = element(child, children, index);
+            else if (child.type === 1 /* ELEMENT */) index = emitElement(child, children, index);
         }
     };
 
-    const element = (node: ElementNode, siblings: TemplateChildNode[], index: number): number => {
+    const emitElement = (node: ElementNode, siblings: TemplateChildNode[], index: number): number => {
         const directives = node.props.filter((prop): prop is DirectiveNode => prop.type === 7);
         const vFor = directives.find(d => d.name === "for");
         const vIf = directives.find(d => d.name === "if");
@@ -753,7 +797,7 @@ function virtualFor(tacet: string, source: string): Virtual {
             const {source: items, value, key, index: position} = vFor.forParseResult;
             const names = [value, key, position].map(part => part !== undefined && part.type === 4 ? part.content : "_");
             while (names.length > 1 && names[names.length - 1] === "_") names.pop();
-            emit(`for (const [${names.join(", ")}] of __each(`);
+            emitText(`for (const [${names.join(", ")}] of __each(`);
             emitExpression(items, "", ")) {\n");
             closers += "}\n";
         }
@@ -762,11 +806,15 @@ function virtualFor(tacet: string, source: string): Virtual {
             closers += "}\n";
         }
         for (const prop of node.props) {
-            if (prop.type !== 7 || prop === vFor || prop === vIf) continue;
+            if (prop.type === 6 /* ATTRIBUTE */) {
+                if (prop.name === "ref" && prop.value !== undefined && REF_PATH.test(prop.value.content)) emitRead(prop.value.content, prop.loc.start.offset, "__ref(", ");\n");
+                continue;
+            }
+            if (prop === vFor || prop === vIf) continue;
             const name = prop.name;
             if (name === "else-if" || name === "else") continue;
             if (name === "slot") {
-                if (prop.exp?.type === 4) emit(`const ${prop.exp.content}: any = $slots;\n`);
+                if (prop.exp?.type === 4) emitText(`const ${prop.exp.content}: any = $slots;\n`);
                 continue;
             }
             if (prop.arg?.type === 4 && !prop.arg.isStatic) emitExpression(prop.arg, "void (", ");\n");
@@ -774,18 +822,17 @@ function virtualFor(tacet: string, source: string): Virtual {
             if (name === "on") {
                 emitExpression(prop.exp, "__event(($event: any) => { ", " });\n");
             } else if (name === "model") {
-                virtual.diagnostics.push({file: tacet, ...lineColumn(source, prop.loc.start.offset), level: "error", message: `A template never writes a field: v-model writes "${prop.exp.content}". Bind :value and handle the event through a method of the view.`});
+                virtual.diagnostics.push({file: tacet, ...findLineColumn(source, prop.loc.start.offset), level: "error", message: `A template never writes a field: v-model writes "${prop.exp.content}". Bind :value and handle the event through a method of the view.`});
                 emitExpression(prop.exp, "void (", ");\n");
             } else if (name === "bind" && prop.arg === undefined) {
                 emitExpression(prop.exp, "void ({...", "});\n");
             } else if (name === "bind" && prop.arg?.type === 4 && prop.arg.content === "ref") {
-                continue;   // the element reaching the view is not a read
+                continue;   // a dynamic ref is Vue's own: the element reaching the view is not a read
             } else {
                 emitExpression(prop.exp, "void (", ");\n");
             }
         }
-        walk(node.children);
-        // v-else-if and v-else chain on the next element siblings.
+        emitChildren(node.children);
         let last = index;
         if (vIf !== undefined) {
             for (let next = index + 1; next < siblings.length; next++) {
@@ -797,33 +844,31 @@ function virtualFor(tacet: string, source: string): Virtual {
                 if (chain === undefined) break;
                 closers = closers.slice(0, -2);
                 if (chain.name === "else-if" && chain.exp?.type === 4) emitExpression(chain.exp, "} else if (", ") {\n");
-                else emit("} else {\n");
+                else emitText("} else {\n");
                 closers += "}\n";
-                element(sibling, [], 0);
+                emitElement(sibling, [], 0);
                 last = next;
             }
         }
-        emit(closers);
+        emitText(closers);
         return last;
     };
 
     if (descriptor.template?.ast !== undefined) {
-        emit("{\n");
-        walk((descriptor.template.ast as RootNode).children);
-        emit("}\n");
+        emitText("{\n");
+        emitChildren((descriptor.template.ast as RootNode).children);
+        emitText("}\n");
     }
     virtual.code = code + out.join("");
     return virtual;
 }
 
-// ---------------------------------------------------------------------------
-
 /** A checker that keeps its TypeScript program between runs, so a change in dev costs a fraction of the first run. */
 export class Checker {
     private readonly options: CheckOptions;
-    private previous: ts.Program | undefined;
     /** Parsed files by name, kept while their text does not change, so TypeScript reuses them. */
     private readonly cache = new Map<string, {text: string; file: ts.SourceFile}>();
+    private previous: ts.Program | undefined;
 
     constructor(options: CheckOptions = {}) {
         this.options = options;
@@ -838,11 +883,11 @@ export class Checker {
         const parsed = ts.parseJsonConfigFileContent(config.config, ts.sys, path.dirname(configPath), undefined, configPath, undefined, [
             {extension: "tacet", isMixedContent: true, scriptKind: ts.ScriptKind.Deferred},
         ]);
-        const virtuals = new Map<string, Virtual>();
+        const virtuals = new Map<string, VirtualFile>();
         for (const file of parsed.fileNames.filter(name => name.endsWith(".tacet"))) {
             const source = ts.sys.readFile(file);
             if (source === undefined) continue;
-            const virtual = virtualFor(file, source);
+            const virtual = buildVirtualFile(file, source);
             virtuals.set(virtual.name, virtual);
         }
         const result = checkFiles(parsed.fileNames.filter(name => !name.endsWith(".tacet")), parsed.options, virtuals, this.previous, this.cache);
@@ -858,16 +903,16 @@ export function checkProject(options: CheckOptions = {}): Diagnostic[] {
 
 /** The check over explicit files; the `.tacet` sources are handed in, for tests. */
 export function checkSources(files: string[], tacets: Record<string, string>, compilerOptions: ts.CompilerOptions): Diagnostic[] {
-    const virtuals = new Map<string, Virtual>();
+    const virtuals = new Map<string, VirtualFile>();
     for (const [file, source] of Object.entries(tacets)) {
-        const virtual = virtualFor(path.resolve(file), source);
+        const virtual = buildVirtualFile(path.resolve(file), source);
         virtuals.set(virtual.name, virtual);
     }
     return checkFiles(files.map(file => path.resolve(file)), compilerOptions, virtuals).diagnostics;
 }
 
 /** The files a `.tacet` file reaches through its imports: the only ones whose marks a template can read. */
-function reachableFrom(program: ts.Program, checker: ts.TypeChecker, roots: ts.SourceFile[]): Set<ts.SourceFile> {
+function collectReachableFiles(checker: ts.TypeChecker, roots: ts.SourceFile[]): Set<ts.SourceFile> {
     const seen = new Set<ts.SourceFile>();
     const queue = [...roots];
     while (queue.length > 0) {
@@ -885,7 +930,7 @@ function reachableFrom(program: ts.Program, checker: ts.TypeChecker, roots: ts.S
     return seen;
 }
 
-function checkFiles(files: string[], compilerOptions: ts.CompilerOptions, virtuals: Map<string, Virtual>, previous?: ts.Program, cache?: Map<string, {text: string; file: ts.SourceFile}>): {diagnostics: Diagnostic[]; program: ts.Program} {
+function checkFiles(files: string[], compilerOptions: ts.CompilerOptions, virtuals: Map<string, VirtualFile>, previous?: ts.Program, cache?: Map<string, {text: string; file: ts.SourceFile}>): {diagnostics: Diagnostic[]; program: ts.Program} {
     const host = ts.createCompilerHost(compilerOptions, true);
     const {fileExists, readFile} = host;
     host.fileExists = name => virtuals.has(name) || fileExists.call(host, name);
@@ -901,36 +946,36 @@ function checkFiles(files: string[], compilerOptions: ts.CompilerOptions, virtua
     };
     const program = ts.createProgram([...files, ...virtuals.keys()], {...compilerOptions, noEmit: true}, host, previous);
     const checker = program.getTypeChecker();
-    const analysis = new Analysis(checker);
-    analysis.locate = (file, position) => {
+    const locatePosition: Locate = (file, position) => {
         const virtual = virtuals.get(file.fileName);
         if (virtual !== undefined) {
             const source = ts.sys.readFile(virtual.tacet) ?? "";
             const range = virtual.ranges.find(r => position >= r.from && position <= r.to);
-            if (range !== undefined) return {file: virtual.tacet, ...lineColumn(source, range.offset + (position - range.from))};
+            if (range !== undefined) return {file: virtual.tacet, ...findLineColumn(source, range.offset + (position - range.from))};
             if (position < virtual.templateStart) {
                 const script = position - virtual.code.indexOf("\n", virtual.code.indexOf(PRELUDE) + PRELUDE.length);
-                return {file: virtual.tacet, ...lineColumn(source, Math.max(0, source.indexOf("<script") + script))};
+                return {file: virtual.tacet, ...findLineColumn(source, Math.max(0, source.indexOf("<script") + script))};
             }
             return {file: virtual.tacet, line: 1, column: 1};
         }
         const {line, character} = file.getLineAndCharacterOfPosition(position);
         return {file: file.fileName, line: line + 1, column: character + 1};
     };
+    const analysis = new Analysis(checker, locatePosition);
 
     const marked: {node: ts.PropertyDeclaration; file: ts.SourceFile}[] = [];
     for (const file of program.getSourceFiles()) {
         if (file.isDeclarationFile || file.fileName.includes("/node_modules/") || virtuals.has(file.fileName)) continue;
-        const visit = (node: ts.Node): void => {
+        const visitNode = (node: ts.Node): void => {
             if (ts.isClassLike(node)) {
                 for (const member of node.members) {
-                    if (ts.isGetAccessorDeclaration(member) && markOf(member) === "live") analysis.getterResult(member);
-                    if (ts.isPropertyDeclaration(member) && markOf(member) !== undefined && !hasModifier(member, ts.SyntaxKind.StaticKeyword)) marked.push({node: member, file});
+                    if (ts.isGetAccessorDeclaration(member) && readMark(member) === "live") analysis.evaluateGetter(member);
+                    if (ts.isPropertyDeclaration(member) && readMark(member) !== undefined && !hasModifier(member, ts.SyntaxKind.StaticKeyword)) marked.push({node: member, file});
                 }
             }
-            ts.forEachChild(node, visit);
+            ts.forEachChild(node, visitNode);
         };
-        visit(file);
+        visitNode(file);
     }
 
     const diagnostics = [...analysis.diagnostics];
@@ -947,14 +992,14 @@ function checkFiles(files: string[], compilerOptions: ts.CompilerOptions, virtua
     }
 
     if (virtuals.size > 0) {
-        const reads = analysis.allReads();
+        const reads = analysis.collectReads();
         const roots = [...virtuals.keys()].map(name => program.getSourceFile(name)).filter((file): file is ts.SourceFile => file !== undefined);
-        const reachable = reachableFrom(program, checker, roots);
+        const reachable = collectReachableFiles(checker, roots);
         for (const {node, file} of marked) {
             if (reads.has(node) || !reachable.has(file)) continue;
             const {line, character} = file.getLineAndCharacterOfPosition(node.name.getStart(file));
             const owner = (node.parent as ts.ClassLikeDeclaration).name?.text ?? "the class";
-            diagnostics.push({file: file.fileName, line: line + 1, column: character + 1, level: "hint", message: `"${(node.name as ts.Identifier).text}" of ${owner} is marked @${markOf(node)}, and no template reads it. The mark costs a little on every write; drop it if nothing on the screen needs it.`});
+            diagnostics.push({file: file.fileName, line: line + 1, column: character + 1, level: "hint", message: `"${(node.name as ts.Identifier).text}" of ${owner} is marked @${readMark(node)}, and no template reads it. The mark costs a little on every write; drop it if nothing on the screen needs it.`});
         }
     }
     return {diagnostics, program};
