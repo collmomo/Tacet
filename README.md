@@ -24,7 +24,7 @@ No mark: plain. The framework never touches it.
 
 A getter that reads marked fields is cached, and refreshed only when one of them changes.
 
-In plain JavaScript the marks are comment tags that the build reads, and the build already exists because the one-file components need it:
+Tacet is written for TypeScript and works in plain JavaScript. In JavaScript the marks are comment tags that the build reads, and the build already exists because the one-file components need it:
 
 ```js
 /** @live */ draft = "";
@@ -51,60 +51,65 @@ A view can hold another view, an entity or a manager, and read its marked fields
 
 ## A todo app
 
-Three files.
+TypeScript, three files. The same code runs as plain JavaScript with the marks as comment tags: drop the types, keep the shape.
 
-**The entity and the manager** (`entities/Todo.js`, `managers/TodoStorage.js`):
+**The entity and the manager** (`entities/Todo.ts`, `managers/TodoStorage.ts`):
 
-```js
+```ts
 export class Todo {
-    id;
-    text;
-    isDone = false;
+    public readonly id: string;
+    public text: string;
+    public isDone = false;
 
-    constructor(text) {
+    constructor(text: string) {
         this.id = crypto.randomUUID();
         this.text = text;
     }
 
-    toggle() {
+    public toggle(): void {
         this.isDone = !this.isDone;
     }
 }
 ```
 
-```js
+```ts
 export class TodoStorage {
-    readTodos() {
-        return JSON.parse(localStorage.getItem("todos") ?? "[]").map(row => Object.assign(new Todo(row.text), row));
+    private static readonly KEY = "todos";
+
+    public readTodos(): Todo[] {
+        const rows: {text: string; isDone: boolean}[] = JSON.parse(localStorage.getItem(TodoStorage.KEY) ?? "[]");
+        return rows.map(row => Object.assign(new Todo(row.text), row));
     }
 
-    writeTodos(todos) {
-        localStorage.setItem("todos", JSON.stringify(todos));
+    public writeTodos(todos: Todo[]): void {
+        localStorage.setItem(TodoStorage.KEY, JSON.stringify(todos));
     }
 }
 ```
 
-**The view** (`views/TodoView.js`):
+**The view** (`views/TodoView.ts`):
 
-```js
+```ts
+export type TodoFilter = "all" | "open" | "done";
+
 export class TodoView {
-    @live draft = "";
-    @live filter = "all";
-    @deep todos = [];
-    storage;
+    @live public draft = "";
+    @live public filter: TodoFilter = "all";
+    @deep public todos: Todo[] = [];
+    private readonly storage: TodoStorage;
 
-    constructor(storage) {
+    constructor(storage: TodoStorage) {
         this.storage = storage;
         this.todos = storage.readTodos();
     }
 
     /** The rows the filter keeps */
-    get shownTodos() {
+    public get shownTodos(): Todo[] {
         if (this.filter === "all") return this.todos;
         return this.todos.filter(todo => todo.isDone === (this.filter === "done"));
     }
 
-    addTodo() {
+    public addTodo(): void {
         const text = this.draft.trim();
         if (text === "") return;
         this.todos.push(new Todo(text));
@@ -112,17 +117,17 @@ export class TodoView {
         this.storage.writeTodos(this.todos);
     }
 
-    toggleTodo(id) {
-        this.todos.find(todo => todo.id === id).toggle();
+    public toggleTodo(id: string): void {
+        this.todos.find(todo => todo.id === id)?.toggle();
         this.storage.writeTodos(this.todos);
     }
 
-    removeTodo(id) {
+    public removeTodo(id: string): void {
         this.todos = this.todos.filter(todo => todo.id !== id);
         this.storage.writeTodos(this.todos);
     }
 
-    setFilter(filter) {
+    public setFilter(filter: TodoFilter): void {
         this.filter = filter;
     }
 }
@@ -140,11 +145,12 @@ export class TodoView {
       <button @click="view.removeTodo(todo.id)">×</button>
     </li>
   </ul>
-  <button v-for="f in ['all', 'open', 'done']" :key="f" :class="{picked: view.filter === f}" @click="view.setFilter(f)">{{ f }}</button>
+  <button v-for="f in filters" :key="f" :class="{picked: view.filter === f}" @click="view.setFilter(f)">{{ f }}</button>
 </template>
 
-<script>
+<script lang="ts">
   const view = app.todo;
+  const filters: TodoFilter[] = ["all", "open", "done"];
 </script>
 
 <style>
@@ -153,22 +159,34 @@ export class TodoView {
 </style>
 ```
 
-**Starting it** (`main.js`):
+**Starting it** (`main.ts`):
 
-```js
-const app = {todo: new TodoView(new TodoStorage())};
+```ts
+export const app = {todo: new TodoView(new TodoStorage())};
 mount(Todos, "#app");
 ```
 
 **A test, no browser:**
 
-```js
+```ts
 const view = new TodoView(new FakeStorage());
 view.draft = "milk";
 view.addTodo();
 expect(view.shownTodos.map(todo => todo.text)).toEqual(["milk"]);
 view.setFilter("done");
 expect(view.shownTodos).toEqual([]);
+```
+
+**The same view in plain JavaScript:**
+
+```js
+export class TodoView {
+    /** @live */ draft = "";
+    /** @live */ filter = "all";
+    /** @deep */ todos = [];
+    storage;
+    // the rest as above, without the types
+}
 ```
 
 What is not there: refs, computed, watch, stores, props drilling, emits, a base class, a call to make things live. The template reads the view and calls it. The view is a class you can use from a test, from a script, or from anything else.
