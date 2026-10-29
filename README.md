@@ -61,13 +61,13 @@ A view can hold another view, an entity or a manager, and read its marked fields
 
 TypeScript, three files. The same code runs as plain JavaScript with the marks as comment tags: drop the types, keep the shape.
 
-**The entity and the manager** (`entities/Todo.ts`, `managers/TodoStorage.ts`):
+**The entity and the manager** (`entities/Todo.ts`, `managers/TodoStorage.ts`). The entity marks what the screen follows on it, since `@deep` on the view's list tracks the list and stops at the class:
 
 ```ts
 export class Todo {
     public readonly id: string;
-    public text: string;
-    public isDone = false;
+    @live public text: string;
+    @live public isDone = false;
 
     constructor(text: string) {
         this.id = crypto.randomUUID();
