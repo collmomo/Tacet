@@ -36,7 +36,7 @@ Tacet is written for TypeScript and works in plain JavaScript. In JavaScript the
 - **entities**: a thing with its fields and what it can do to itself. A `Todo`.
 - **managers**: holds many of them, keeps and reads them, the rules across them. A `TodoStorage`.
 - **views**: what one screen needs. One public method per user action. The marked fields. A `TodoView`.
-- **components**: the one-file pages and pieces. Template, script, style together. The script is one line.
+- **components**: the one-file pages and pieces, `.tacet` files. Template, script, style together. The script is one line.
 
 A view can hold another view, an entity or a manager, and read its marked fields through it. Where shared state lives is your design: a third view, composition, inheritance. The framework stays out of it.
 
@@ -133,7 +133,7 @@ export class TodoView {
 }
 ```
 
-**The component** (`components/Todos.vue`):
+**The component** (`components/Todos.tacet`, the same three blocks a `.vue` file has, compiled by the borrowed compiler):
 
 ```html
 <template>
