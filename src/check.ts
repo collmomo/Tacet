@@ -133,6 +133,16 @@ function unwrapValue(node: ts.Node): ts.Node {
     return inner;
 }
 
+/** The module-level const whose literal initializer holds `node` in a slot, through nested literals and wrappers; nothing otherwise. */
+function findHoldingConst(node: ts.Node): ts.VariableDeclaration | undefined {
+    let current: ts.Node = node;
+    while (isLiteralSlot(current.parent, current) || isValueWrapper(current.parent) || ts.isShorthandPropertyAssignment(current.parent)) current = current.parent;
+    const declaration = current.parent;
+    if (!ts.isVariableDeclaration(declaration) || declaration.initializer !== current) return undefined;
+    const list = declaration.parent;
+    return ts.isVariableDeclarationList(list) && (list.flags & ts.NodeFlags.Const) !== 0 && ts.isVariableStatement(list.parent) && ts.isSourceFile(list.parent.parent) ? declaration : undefined;
+}
+
 /** The initializer of a `const`, unwrapped, or nothing for anything else. */
 function findConstInitializer(declaration: ts.Declaration | undefined): ts.Node | undefined {
     if (declaration === undefined || !ts.isVariableDeclaration(declaration) || declaration.initializer === undefined) return undefined;
@@ -289,7 +299,7 @@ class Analysis {
             else if (property.name !== undefined && ts.isIdentifier(property.name) && property.name.text === name) found = property;
         }
         // While its file is being classified the literal is trusted: a replacement of the property is a write that classification finds on its own.
-        if (found !== undefined && !this.classifying.has(declaration.getSourceFile()) && this.isWrittenConst(declaration)) return undefined;
+        if (found !== undefined && this.isWrittenConst(declaration, true)) return undefined;
         return found;
     }
 
@@ -560,8 +570,7 @@ class Analysis {
         return symbol.valueDeclaration ?? symbol.declarations?.[0];
     }
 
-    private readIdentifier(node: ts.Identifier, frame: Frame): Source {
-        const symbol = this.checker.getSymbolAtLocation(node);
+    private readIdentifier(node: ts.Identifier, frame: Frame, symbol = this.checker.getSymbolAtLocation(node)): Source {
         if (symbol === undefined) return "leaf";
         const local = frame.locals.get(symbol);
         if (local !== undefined) return local;
@@ -585,17 +594,18 @@ class Analysis {
             this.muted--;
             this.stack.delete(declaration);
         }
-        // A value the check could not follow (a library object that changes, a plain field) stays fixed, its reads judged where they happen; a literal is its own.
-        if (this.mutedErrors > troubled && source === "leaf") return "fixed";
-        if (ts.isVariableDeclarationList(list) && ts.isVariableStatement(list.parent) && ts.isSourceFile(list.parent.parent) && !this.isWrittenConst(declaration)) return "fresh";
+        // A value the check could not follow (a library object that changes, a plain field) stays fixed, its reads judged where they happen; a literal's slots are judged one by one.
+        if (this.mutedErrors > troubled && source !== "fresh") return "fixed";
+        // A module const nothing writes keeps a literal fresh; anything else it holds keeps its own source, an alias of a library object included.
+        if (ts.isVariableDeclarationList(list) && ts.isVariableStatement(list.parent) && ts.isSourceFile(list.parent.parent) && !this.isWrittenConst(declaration)) return source;
         return source === "fresh" ? "fixed" : source;
     }
 
     /** A module-level const anyone may write is not a value: one exported, or referenced in its file other than as a plain read. */
-    private isWrittenConst(declaration: ts.VariableDeclaration): boolean {
+    private isWrittenConst(declaration: ts.VariableDeclaration, trustWhileClassifying = false): boolean {
         const file = declaration.getSourceFile();
-        // Asked again while the file is still being classified, a const counts as written: the safe answer, never a loop.
-        if (this.classifying.has(file)) return true;
+        // Asked while the file is still being classified: written, the safe answer, unless the caller only needs to know that no replacement escapes classification.
+        if (this.classifying.has(file)) return !trustWhileClassifying;
         let consts = this.writtenConsts.get(file);
         if (consts === undefined) {
             this.classifying.add(file);
@@ -617,16 +627,31 @@ class Analysis {
             const exported = hasModifier(statement, ts.SyntaxKind.ExportKeyword);
             for (const declaration of statement.declarationList.declarations) written.set(declaration, exported);
         }
+        // A const held in another module const's literal is written when that holder is: the holding itself is no write.
+        const holders = new Map<ts.VariableDeclaration, Set<ts.VariableDeclaration>>();
         const visitNode = (node: ts.Node): void => {
             if (ts.isExportSpecifier(node)) {
                 const target = this.checker.getExportSpecifierLocalTargetSymbol(node)?.valueDeclaration;
                 if (target !== undefined && ts.isVariableDeclaration(target) && written.has(target)) written.set(target, true);
             } else if (ts.isIdentifier(node)) {
                 const target = this.findReferencedDeclaration(node);
-                if (target !== undefined && ts.isVariableDeclaration(target) && written.has(target) && target.name !== node && !this.isPlainRead(node)) written.set(target, true);
+                if (target !== undefined && ts.isVariableDeclaration(target) && written.has(target) && target.name !== node && !this.isPlainRead(node)) {
+                    const holder = findHoldingConst(node);
+                    if (holder !== undefined && written.has(holder) && holder !== target) {
+                        let held = holders.get(target);
+                        if (held === undefined) holders.set(target, held = new Set());
+                        held.add(holder);
+                    } else written.set(target, true);
+                }
             } else ts.forEachChild(node, visitNode);
         };
         visitNode(file);
+        for (let changed = true; changed;) {
+            changed = false;
+            for (const [held, by] of holders) {
+                if (written.get(held) !== true && [...by].some(holder => written.get(holder) === true)) { written.set(held, true); changed = true; }
+            }
+        }
         return written;
     }
 
@@ -642,8 +667,33 @@ class Analysis {
         if (baseSource === "leaf") return "leaf";
         const baseType = this.checker.getTypeAtLocation(base);
         if (this.isLeafType(baseType)) return "leaf";
+        if (baseSource === "fresh") {
+            // A const's literal says what each property holds: its own literal is fresh, an alias of something else keeps that thing's source.
+            const slot = this.findLiteralProperty(base, name);
+            if (slot !== undefined) return this.readLiteralSlot(slot, frame);
+        }
         const property = ts.isPropertyAccessExpression(node) ? this.checker.getSymbolAtLocation(node.name) : this.checker.getPropertyOfType(baseType.getNonNullableType(), name);
         return this.readMember(node, base, baseSource, baseType, name, property);
+    }
+
+    /** What a property of a const's literal holds, evaluated muted: it was built once. */
+    private readLiteralSlot(slot: ts.ObjectLiteralElementLike, frame: Frame): Source {
+        if (ts.isPropertyAssignment(slot)) return this.evaluateMuted(slot.initializer, frame);
+        if (ts.isShorthandPropertyAssignment(slot)) return this.evaluateMuted(slot.name, frame, this.checker.getShorthandAssignmentValueSymbol(slot));
+        return "fixed";
+    }
+
+    /** Evaluates an expression that ran once, reporting nothing; what could not be followed is fixed, its reads judged where they happen. */
+    private evaluateMuted(expression: ts.Expression, frame: Frame, symbol?: ts.Symbol): Source {
+        this.muted++;
+        const troubled = this.mutedErrors;
+        let source: Source;
+        try {
+            source = symbol !== undefined && ts.isIdentifier(expression) ? this.readIdentifier(expression, frame, symbol) : this.evaluateExpression(expression, frame);
+        } finally {
+            this.muted--;
+        }
+        return this.mutedErrors > troubled ? "fixed" : source;
     }
 
     private readMember(node: ts.Node, base: ts.Expression, baseSource: Source, baseType: ts.Type, name: string, property: ts.Symbol | undefined): Source {

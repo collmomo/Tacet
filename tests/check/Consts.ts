@@ -233,6 +233,10 @@ const count = {n: kids.length, items: [1]};
 const heldApi = {x: [1], api};
 export const apiText = heldApi.api.format(2);
 
+const heldKids = {inner: kids, items: [1]};
+const kidsAlias = kids;
+const doc = document;
+
 const casted = {x: [1]};
 (casted.x.push as (n: number) => number)(2);
 
@@ -312,6 +316,10 @@ export class ConstsView {
     @live public get annotatedX(): number { return annotated.x.length; }
     @live public get countItems(): number { return count.items.length; }
     @live public get heldApiX(): number { return heldApi.x.length; }
+    @live public get heldKidsCount(): number { return heldKids.inner.length; }
+    @live public get heldKidsItems(): number { return heldKids.items.length; }
+    @live public get kidsAliasCount(): number { return kidsAlias.length; }
+    @live public get docCount(): number { return doc.body.children.length; }
     @live public get branchedX(): number { return branched.x.length; }
     @live public get indexedX(): number { return indexed.x.length; }
     @live public get elementX(): number { return element.x.length; }
