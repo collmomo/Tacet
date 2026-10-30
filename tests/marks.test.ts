@@ -1,5 +1,6 @@
 import {describe, expect, it} from "vitest";
-import {promoteScriptToSetup, readMarkName} from "../src/marks";
+import ts from "typescript";
+import {findScriptOpening, promoteScriptToSetup, readDecoratorMark, readMark, readMarkName, readTagMark} from "../src/marks";
 
 describe("the shared helpers", () => {
     it("promotes the script tag before the content, and says when there is none", () => {
@@ -17,13 +18,11 @@ describe("the shared helpers", () => {
 });
 
 describe("the mark readers", () => {
-    const ts = require("typescript") as typeof import("typescript");
     const members = (code: string): ts.ClassElement[] => {
         const file = ts.createSourceFile("m.ts", code, ts.ScriptTarget.Latest, true);
         return (file.statements[0] as ts.ClassDeclaration).members.slice();
     };
-    it("reads a decorator, plain or called, a tag, and lets the decorator win", async () => {
-        const {readDecoratorMark, readMark, readTagMark, findScriptOpening} = await import("../src/marks");
+    it("reads a decorator, plain or called, a tag, and lets the decorator win", () => {
         const [decorated, called, tagged, both, plain] = members(`class V {\n @live a = 1;\n @deep() b = [];\n /** @live */ c = 1;\n /** @deep */ @live d = 1;\n e = 1;\n}`);
         expect(readDecoratorMark(decorated)).toBe("live");
         expect(readDecoratorMark(called)).toBe("deep");

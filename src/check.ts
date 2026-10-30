@@ -2,7 +2,7 @@
 import ts from "typescript";
 import path from "node:path";
 import {compileScript, compileTemplate, parse as parseSfc} from "vue/compiler-sfc";
-import type {DirectiveNode, type ElementNode, type ExpressionNode, type RootNode, type TemplateChildNode} from "@vue/compiler-core";
+import type {DirectiveNode, ElementNode, ExpressionNode, RootNode, TemplateChildNode} from "@vue/compiler-core";
 import {promoteScriptToSetup, readMark} from "./marks.js";
 
 export interface Diagnostic {
