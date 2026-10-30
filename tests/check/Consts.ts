@@ -16,10 +16,14 @@ const spread = {x: 1};
 const target = {x: 1};
 for (target.x of [3]) {}
 
+const pattern = {x: 1};
+for ([pattern.x] of [[4]]) {}
+
 export class ConstsView {
     @live public get loopedN(): number { return looped[0].n; }
     @live public get keyedN(): number { return keyed[0].n; }
     @live public get typedX(): number { return typed.x; }
     @live public get spreadX(): number { return spread.x; }
     @live public get targetX(): number { return target.x; }
+    @live public get patternX(): number { return pattern.x; }
 }

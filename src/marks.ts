@@ -1,9 +1,11 @@
 import ts from "typescript";
 
-export type MarkName = "live" | "deep";
+export const MARK_NAMES = ["live", "deep"] as const;
+
+export type MarkName = (typeof MARK_NAMES)[number];
 
 export function readMarkName(name: string): MarkName | undefined {
-    return name === "live" || name === "deep" ? name : undefined;
+    return (MARK_NAMES as readonly string[]).includes(name) ? name as MarkName : undefined;
 }
 
 export function readDecoratorMark(member: ts.Node): MarkName | undefined {
@@ -33,9 +35,9 @@ export function findScriptOpening(source: string, contentOffset: number): number
     return source.lastIndexOf("<script", contentOffset);
 }
 
-export function promoteScriptToSetup(source: string, contentOffset: number): string {
+export function promoteScriptToSetup(source: string, contentOffset: number): string | undefined {
     const opening = findScriptOpening(source, contentOffset);
-    if (opening < 0) return source;
+    if (opening < 0) return undefined;
     const after = opening + "<script".length;
     return source.slice(0, after) + " setup" + source.slice(after);
 }

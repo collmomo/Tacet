@@ -2,7 +2,7 @@
 import ts from "typescript";
 import path from "node:path";
 import {compileScript, errorMessages, parse as parseSfc} from "vue/compiler-sfc";
-import type {DirectiveNode, ElementNode, ExpressionNode, RootNode, TemplateChildNode} from "@vue/compiler-core";
+import {ErrorCodes, type DirectiveNode, type ElementNode, type ExpressionNode, type RootNode, type TemplateChildNode} from "@vue/compiler-core";
 import {promoteScriptToSetup, readMark} from "./marks.js";
 
 export interface Diagnostic {
@@ -87,22 +87,29 @@ function isCountOperator(kind: ts.SyntaxKind): boolean {
 }
 
 /** A property of a literal under `as const` is readonly without a modifier on it. */
-function isUnderConstAssertion(declaration: ts.Node): boolean {
-    let node = declaration;
-    while (ts.isObjectLiteralExpression(node.parent) || ts.isArrayLiteralExpression(node.parent) || ts.isPropertyAssignment(node.parent) || ts.isParenthesizedExpression(node.parent)) node = node.parent;
-    return ts.isAsExpression(node.parent) && ts.isConstTypeReference(node.parent.type);
-}
-
-/** Whether `node` sits in a slot of an array or object literal, where a destructuring assignment would write it. */
+/** Whether `node` sits in a slot of an array or object literal, a spread, a property's value or parentheses. */
 function isLiteralSlot(parent: ts.Node, node: ts.Node): boolean {
-    return ts.isArrayLiteralExpression(parent) || ts.isObjectLiteralExpression(parent) || ts.isSpreadElement(parent) || ts.isSpreadAssignment(parent) || (ts.isPropertyAssignment(parent) && parent.initializer === node);
+    return ts.isArrayLiteralExpression(parent) || ts.isObjectLiteralExpression(parent) || ts.isSpreadElement(parent) || ts.isSpreadAssignment(parent) || ts.isParenthesizedExpression(parent) || (ts.isPropertyAssignment(parent) && parent.initializer === node);
 }
 
-/** Whether the literal around `slot` is, itself or inside another literal, the left side of a destructuring assignment. */
-function isDestructuringTarget(slot: ts.Node): boolean {
-    let literal = slot;
+/** The outermost literal `node` sits in, or `node` itself. */
+function climbLiteral(node: ts.Node): ts.Node {
+    let literal = node;
     while (isLiteralSlot(literal.parent, literal)) literal = literal.parent;
-    return ts.isBinaryExpression(literal.parent) && literal.parent.left === literal && literal.parent.operatorToken.kind === ts.SyntaxKind.EqualsToken;
+    return literal;
+}
+
+function isUnderConstAssertion(declaration: ts.Node): boolean {
+    const literal = climbLiteral(declaration);
+    return ts.isAsExpression(literal.parent) && ts.isConstTypeReference(literal.parent.type);
+}
+
+/** Whether the literal around `slot` is the target of a destructuring assignment or of a for...of / for...in. */
+function isDestructuringTarget(slot: ts.Node): boolean {
+    const literal = climbLiteral(slot);
+    const parent = literal.parent;
+    if (ts.isForOfStatement(parent) || ts.isForInStatement(parent)) return parent.initializer === literal;
+    return ts.isBinaryExpression(parent) && parent.left === literal && parent.operatorToken.kind === ts.SyntaxKind.EqualsToken;
 }
 
 /** Whether `node` is assigned, counted, deleted or mutated through a method, itself or through a path into it. */
@@ -795,8 +802,8 @@ declare function __event(handler: ($event: any) => unknown): void;
 declare function __ref(field: unknown): void;
 declare const $event: any, $attrs: any, $slots: any, $refs: any, $el: any, $props: any, $emit: any, $nextTick: any;
 `;
-/** Vue's wording for a directive its transform refuses, by its ErrorCodes X_V_IF_NO_EXPRESSION, X_V_FOR_NO_EXPRESSION and X_V_FOR_MALFORMED_EXPRESSION: compiler-sfc exports the messages at run time, not the enum. */
-const DIRECTIVE_ERRORS = {missingCondition: errorMessages[28], missingItems: errorMessages[31], brokenItems: errorMessages[32]};
+/** Vue's wording for a directive its transform refuses; the check never runs that transform, so it says the same words itself. */
+const DIRECTIVE_ERRORS = {missingCondition: errorMessages[ErrorCodes.X_V_IF_NO_EXPRESSION], missingItems: errorMessages[ErrorCodes.X_V_FOR_NO_EXPRESSION], brokenItems: errorMessages[ErrorCodes.X_V_FOR_MALFORMED_EXPRESSION]};
 /** A static `ref` whose value is a path into an object, the form `src/files.ts` rewrites into an assignment. */
 const REF_PATH = /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+$/;
 
@@ -822,7 +829,9 @@ function buildVirtualFile(tacet: string, source: string): VirtualFile {
         try {
             let setup = descriptor;
             if (descriptor.scriptSetup === null) {
-                setup = parseSfc(promoteScriptToSetup(source, script.loc.start.offset), {filename: tacet}).descriptor;
+                const promoted = promoteScriptToSetup(source, script.loc.start.offset);
+                if (promoted === undefined) throw new Error("the script's opening tag was not found");
+                setup = parseSfc(promoted, {filename: tacet}).descriptor;
             }
             const compiled = compileScript(setup, {id: tacet});
             propNames = Object.entries(compiled.bindings ?? {}).filter(([, kind]) => kind === "props").map(([name]) => name);

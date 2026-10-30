@@ -1,7 +1,7 @@
 import ts from "typescript";
 import MagicString, {type SourceMap} from "magic-string";
 import type {Plugin} from "vite";
-import {readDecoratorMark, readMarkName} from "./marks.js";
+import {MARK_NAMES, readDecoratorMark, readMarkName} from "./marks.js";
 
 export interface TagsOptions {
     /** The module the inserted calls import from. Default: "tacet/runtime". */
@@ -15,7 +15,7 @@ export interface TagsResult {
     errors: string[];
 }
 
-const QUICK = /@(?:live|deep)\b|\/\*\*\s*@[a-z]+\s*\*\/|\bas\s+live\b/;
+const QUICK = new RegExp(`@(?:${MARK_NAMES.join("|")})\\b|/\\*\\*\\s*@[a-z]+\\s*\\*/|\\bas\\s+live\\b`);
 
 function readScriptKind(id: string): ts.ScriptKind {
     if (/\.[cm]?tsx$/.test(id)) return ts.ScriptKind.TSX;
