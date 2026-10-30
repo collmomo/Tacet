@@ -125,44 +125,15 @@ function climbValue(node: ts.Node): ts.Node {
     return current;
 }
 
-/** Whether a callee may be a mutator: a known name on any branch, or a name the build cannot read. */
-function mayMutate(callee: ts.Node): boolean {
-    if (isValueWrapper(callee)) return mayMutate(callee.expression);
-    if (ts.isConditionalExpression(callee)) return mayMutate(callee.whenTrue) || mayMutate(callee.whenFalse);
-    if (ts.isBinaryExpression(callee)) return mayMutate(callee.right) || (callee.operatorToken.kind !== ts.SyntaxKind.CommaToken && mayMutate(callee.left));
-    if (ts.isPropertyAccessExpression(callee)) return MUTATORS.has(callee.name.text);
-    if (ts.isElementAccessExpression(callee)) {
-        const key = callee.argumentExpression;
-        if (ts.isStringLiteralLike(key)) return MUTATORS.has(key.text);
-        return !ts.isNumericLiteral(key);
-    }
-    return false;
-}
+/** Methods of a library container that hand back a new container, never the one they were called on. */
+const COPIERS = new Set(["slice", "filter", "map", "concat", "flat", "flatMap", "toSorted", "toReversed", "toSpliced", "with", "split", "join", "toString", "at", "includes", "indexOf", "lastIndexOf", "some", "every", "reduce", "reduceRight", "findIndex", "findLastIndex"]);
 
-/** Whether `node` is assigned, counted, deleted or mutated through a method, itself or through a path into it. */
-function isWriteTarget(node: ts.Node): boolean {
-    let target = climbValue(node);
-    for (;;) {
-        const parent = target.parent;
-        if ((ts.isPropertyAccessExpression(parent) || ts.isElementAccessExpression(parent)) && parent.expression === target) {
-            target = climbValue(parent);
-        } else if (ts.isCallExpression(parent) && parent.expression === target) {
-            // A mutator writes; any other call may hand back the field's own data (find, at, get, a method of a class), so a write to its result is a write.
-            if (mayMutate(target)) return true;
-            target = climbValue(parent);
-        } else {
-            if (ts.isBinaryExpression(parent)) return parent.left === target && isAssignmentOperator(parent.operatorToken.kind);
-            if (ts.isPrefixUnaryExpression(parent) || ts.isPostfixUnaryExpression(parent)) return isCountOperator(parent.operator);
-            if (ts.isForOfStatement(parent) || ts.isForInStatement(parent)) return parent.initializer === target;
-            if (ts.isDeleteExpression(parent)) return true;
-            if (!isLiteralSlot(parent, target)) return false;
-            // A destructuring pattern is a literal on the left of `=` or in a loop head.
-            const literal = climbLiteral(target);
-            const holder = literal.parent;
-            if (ts.isBinaryExpression(holder)) return holder.left === literal && holder.operatorToken.kind === ts.SyntaxKind.EqualsToken;
-            return (ts.isForOfStatement(holder) || ts.isForInStatement(holder)) && holder.initializer === literal;
-        }
-    }
+/** Whether `target` is the left of an assignment, the operand of a count or of a delete. */
+function isDirectWrite(target: ts.Node): boolean {
+    const parent = target.parent;
+    if (ts.isBinaryExpression(parent)) return parent.left === target && isAssignmentOperator(parent.operatorToken.kind);
+    if (ts.isPrefixUnaryExpression(parent) || ts.isPostfixUnaryExpression(parent)) return isCountOperator(parent.operator);
+    return ts.isDeleteExpression(parent);
 }
 
 /** Whether `node` is the name a `typeof a.b` type query starts with: a read of its type, never of its value. */
@@ -170,25 +141,6 @@ function isTypeQueryName(node: ts.Node): boolean {
     let name = node;
     while (ts.isQualifiedName(name.parent)) name = name.parent;
     return ts.isTypeQueryNode(name.parent);
-}
-
-/** Whether `reference` only reads the name in place: the value neither reaches another holder nor is written through it. */
-function isPlainRead(reference: ts.Node): boolean {
-    const node = climbValue(reference);
-    const parent = node.parent;
-    if ((ts.isPropertyAccessExpression(parent) || ts.isElementAccessExpression(parent)) && parent.expression === node) return !isWriteTarget(reference);
-    if (ts.isCallExpression(parent)) return parent.expression === node || (ts.isIdentifier(parent.expression) && PRELUDE_HELPERS.has(parent.expression.text));
-    if (ts.isNewExpression(parent)) return parent.expression === node;
-    if (ts.isTaggedTemplateExpression(parent)) return parent.tag === node;
-    if (ts.isTemplateSpan(parent)) return !ts.isTaggedTemplateExpression(parent.parent.parent);
-    if (ts.isVoidExpression(parent) || ts.isTypeOfExpression(parent) || ts.isExpressionStatement(parent)) return true;
-    if (ts.isTypeQueryNode(parent) || ts.isQualifiedName(parent)) return isTypeQueryName(node);
-    if (ts.isPrefixUnaryExpression(parent) || ts.isPostfixUnaryExpression(parent)) return !isCountOperator(parent.operator);
-    if (ts.isBinaryExpression(parent)) return !isAssignmentOperator(parent.operatorToken.kind);
-    if (ts.isConditionalExpression(parent) || ts.isIfStatement(parent) || ts.isWhileStatement(parent) || ts.isDoStatement(parent) || ts.isSwitchStatement(parent) || ts.isCaseClause(parent)) return true;
-    if (ts.isForStatement(parent)) return parent.initializer !== node;
-    if (ts.isForOfStatement(parent) || ts.isForInStatement(parent)) return parent.expression === node;
-    return false;
 }
 
 function findEnclosingFunction(node: ts.Node): ts.Node | undefined {
@@ -250,6 +202,89 @@ class Analysis {
         if (flags & (ts.TypeFlags.StringLike | ts.TypeFlags.NumberLike | ts.TypeFlags.BooleanLike | ts.TypeFlags.BigIntLike | ts.TypeFlags.ESSymbolLike | ts.TypeFlags.EnumLike)) return true;
         if (type.isUnion()) return type.types.every(part => this.isLeafType(part));
         return type.getCallSignatures().length > 0 && type.getProperties().length === 0;
+    }
+
+    /** What a call on the path does to the data it is reached through, judged by the callee's declaration. */
+    private readCallEffect(callee: ts.Node): "mutates" | "copies" | "passes" {
+        const worst = (...effects: ("mutates" | "copies" | "passes")[]): "mutates" | "copies" | "passes" => effects.includes("mutates") ? "mutates" : effects.includes("passes") ? "passes" : "copies";
+        if (isValueWrapper(callee)) return this.readCallEffect(callee.expression);
+        if (ts.isConditionalExpression(callee)) return worst(this.readCallEffect(callee.whenTrue), this.readCallEffect(callee.whenFalse));
+        if (ts.isBinaryExpression(callee)) {
+            const kind = callee.operatorToken.kind;
+            // `a && b` and `a, b` call b; `a || b` and `a ?? b` call either.
+            return kind === ts.SyntaxKind.AmpersandAmpersandToken || kind === ts.SyntaxKind.CommaToken ? this.readCallEffect(callee.right) : worst(this.readCallEffect(callee.left), this.readCallEffect(callee.right));
+        }
+        if (!ts.isPropertyAccessExpression(callee) && !ts.isElementAccessExpression(callee)) return "passes";
+        const baseType = this.checker.getTypeAtLocation(callee.expression);
+        if (baseType.getFlags() & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) return "mutates";
+        if (baseType.getCallSignatures().length > 0) return "mutates";
+        let name: string | undefined;
+        if (ts.isPropertyAccessExpression(callee)) name = callee.name.text;
+        else {
+            const keyType = this.checker.getTypeAtLocation(callee.argumentExpression);
+            if (keyType.isStringLiteral()) name = keyType.value;
+            else if (keyType.getFlags() & ts.TypeFlags.NumberLike) return "passes";
+            else return "mutates";
+        }
+        if (this.isLeafType(baseType)) return "copies";
+        const property = this.checker.getPropertyOfType(baseType.getNonNullableType(), name);
+        const declaration = this.findDeclaration(property);
+        if (declaration === undefined || !declaration.getSourceFile().isDeclarationFile) return "mutates";
+        if (this.nameContainer(baseType) === undefined) return "mutates";
+        return MUTATORS.has(name) ? "mutates" : COPIERS.has(name) ? "copies" : "passes";
+    }
+
+    /** Whether `node` is assigned, counted, deleted or mutated through a method, itself or through a path into it. */
+    private isWriteTarget(node: ts.Node): boolean {
+        let target = climbValue(node);
+        let fresh = false;
+        for (;;) {
+            const parent = target.parent;
+            if ((ts.isPropertyAccessExpression(parent) || ts.isElementAccessExpression(parent)) && parent.expression === target) {
+                const access = climbValue(parent);
+                if (fresh) {
+                    // The first step into a copy is the copy's own slot or method: a write there is not the field's.
+                    fresh = false;
+                    const call = access.parent;
+                    const isCallee = ts.isCallExpression(call) && call.expression === access;
+                    if (isCallee ? this.readCallEffect(access) === "mutates" : isDirectWrite(access)) return false;
+                }
+                target = access;
+            } else if (ts.isCallExpression(parent) && parent.expression === target) {
+                const effect = this.readCallEffect(target);
+                if (effect === "mutates") return true;
+                fresh = effect === "copies";
+                target = climbValue(parent);
+            } else {
+                if (ts.isBinaryExpression(parent) || ts.isPrefixUnaryExpression(parent) || ts.isPostfixUnaryExpression(parent) || ts.isDeleteExpression(parent)) return isDirectWrite(target);
+                if (ts.isForOfStatement(parent) || ts.isForInStatement(parent)) return parent.initializer === target;
+                if (!isLiteralSlot(parent, target)) return false;
+                // A destructuring pattern is a literal on the left of `=` or in a loop head.
+                const literal = climbLiteral(target);
+                const holder = literal.parent;
+                if (ts.isBinaryExpression(holder)) return holder.left === literal && holder.operatorToken.kind === ts.SyntaxKind.EqualsToken;
+                return (ts.isForOfStatement(holder) || ts.isForInStatement(holder)) && holder.initializer === literal;
+            }
+        }
+    }
+
+    /** Whether `reference` only reads the name in place: the value neither reaches another holder nor is written through it. */
+    private isPlainRead(reference: ts.Node): boolean {
+        const node = climbValue(reference);
+        const parent = node.parent;
+        if ((ts.isPropertyAccessExpression(parent) || ts.isElementAccessExpression(parent)) && parent.expression === node) return !this.isWriteTarget(reference);
+        if (ts.isCallExpression(parent)) return parent.expression === node || (ts.isIdentifier(parent.expression) && PRELUDE_HELPERS.has(parent.expression.text));
+        if (ts.isNewExpression(parent)) return parent.expression === node;
+        if (ts.isTaggedTemplateExpression(parent)) return parent.tag === node;
+        if (ts.isTemplateSpan(parent)) return !ts.isTaggedTemplateExpression(parent.parent.parent);
+        if (ts.isVoidExpression(parent) || ts.isTypeOfExpression(parent) || ts.isExpressionStatement(parent)) return true;
+        if (ts.isTypeQueryNode(parent) || ts.isQualifiedName(parent)) return isTypeQueryName(node);
+        if (ts.isPrefixUnaryExpression(parent) || ts.isPostfixUnaryExpression(parent)) return !isCountOperator(parent.operator);
+        if (ts.isBinaryExpression(parent)) return !isAssignmentOperator(parent.operatorToken.kind);
+        if (ts.isConditionalExpression(parent) || ts.isIfStatement(parent) || ts.isWhileStatement(parent) || ts.isDoStatement(parent) || ts.isSwitchStatement(parent) || ts.isCaseClause(parent)) return true;
+        if (ts.isForStatement(parent)) return parent.initializer !== node;
+        if (ts.isForOfStatement(parent) || ts.isForInStatement(parent)) return parent.expression === node;
+        return false;
     }
 
     private nameContainer(type: ts.Type): string | undefined {
@@ -454,7 +489,7 @@ class Analysis {
                 if (target !== undefined && ts.isVariableDeclaration(target) && written.has(target)) written.set(target, true);
             } else if (ts.isIdentifier(node)) {
                 const target = this.findReferencedDeclaration(node);
-                if (target !== undefined && ts.isVariableDeclaration(target) && written.has(target) && target.name !== node && !isPlainRead(node)) written.set(target, true);
+                if (target !== undefined && ts.isVariableDeclaration(target) && written.has(target) && target.name !== node && !this.isPlainRead(node)) written.set(target, true);
             } else ts.forEachChild(node, visitNode);
         };
         visitNode(file);
@@ -865,8 +900,9 @@ function buildVirtualFile(tacet: string, source: string): VirtualFile {
     let propsType = "any";
     if (script !== null) {
         parts.push(script.content);
+        const promoted = descriptor.scriptSetup === null ? promoteScriptToSetup(source, script.loc.start.offset) : undefined;
         try {
-            const setup = descriptor.scriptSetup === null ? parseSfc(promoteScriptToSetup(source, script.loc.start.offset), {filename: tacet}).descriptor : descriptor;
+            const setup = promoted === undefined ? descriptor : parseSfc(promoted, {filename: tacet}).descriptor;
             const compiled = compileScript(setup, {id: tacet});
             propNames = Object.entries(compiled.bindings ?? {}).filter(([, kind]) => kind === "props").map(([name]) => name);
             const typeArgument = /defineProps\s*<([^]*?)>\s*\(/.exec(script.content);

@@ -3,10 +3,11 @@ import ts from "typescript";
 import {findScriptOpening, promoteScriptToSetup, readDecoratorMark, readMark, readMarkName, readTagMark} from "../src/marks";
 
 describe("the shared helpers", () => {
-    it("promotes the script tag before the content, and finds the tag", () => {
+    it("promotes the script tag before the content, finds the tag, and refuses a source with no tag", () => {
         const source = `<template></template>\n<script lang="ts">\nconst a = 1;\n</script>`;
         const content = source.indexOf("\nconst a");
         expect(promoteScriptToSetup(source, content)).toBe(`<template></template>\n<script setup lang="ts">\nconst a = 1;\n</script>`);
+        expect(() => promoteScriptToSetup("const a = 1;", 0)).toThrow(/opening/);
         expect(findScriptOpening(`<template></template><script lang="ts">x</script>`, 40)).toBe(21);
         expect(findScriptOpening("no tag", 3)).toBe(-1);
     });

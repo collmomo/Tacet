@@ -35,8 +35,10 @@ export function findScriptOpening(source: string, contentOffset: number): number
     return source.lastIndexOf("<script", contentOffset);
 }
 
-/** The offset is the parser's own start of the script content, so the opening tag always precedes it. */
+/** The offset is the parser's own start of the script content, so the opening tag always precedes it; a miss is a bug, thrown, never a silent edit. */
 export function promoteScriptToSetup(source: string, contentOffset: number): string {
-    const after = findScriptOpening(source, contentOffset) + "<script".length;
+    const opening = findScriptOpening(source, contentOffset);
+    if (opening < 0) throw new Error("Tacet: no <script opening before the script content; the offset must come from the parser.");
+    const after = opening + "<script".length;
     return source.slice(0, after) + " setup" + source.slice(after);
 }

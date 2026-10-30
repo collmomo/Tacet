@@ -64,6 +64,12 @@ const wrapped = {x: [1]};
 
 const copied = {x: [1]};
 copied.x.slice().push(2);
+copied.x.map(n => n)[0] = 1;
+copied.x.slice().sort();
+copied.x.filter(n => n > 0).reverse().length = 0;
+
+const labelled = {x: "a,b"};
+labelled.x.split(",").reverse();
 
 const element = {x: [{y: 1}]};
 element.x.filter(() => true)[0].y = 2;
@@ -74,6 +80,17 @@ const key = "push";
 
 const indexed = {x: [(n: number) => n]};
 indexed.x[0](2);
+for (let i = 0; i < indexed.x.length; i++) indexed.x[i](2);
+
+const anded = {x: [1]};
+const noop = (n: number): number => n;
+(anded.x.push && noop)(2);
+
+const dated = {x: new Date(0)};
+dated.x.setFullYear(2030);
+
+const applied = {x: [1]};
+applied.x.push.apply(applied.x, [2]);
 
 const casted = {x: [1]};
 (casted.x.push as (n: number) => number)(2);
@@ -110,6 +127,10 @@ export class ConstsView {
     @live public get chosenX(): number { return chosen.x.y; }
     @live public get wrappedX(): number { return wrapped.x.length; }
     @live public get copiedX(): number { return copied.x.length; }
+    @live public get labelledX(): number { return labelled.x.length; }
+    @live public get andedX(): number { return anded.x.length; }
+    @live public get datedX(): number { return dated.x.getFullYear(); }
+    @live public get appliedX(): number { return applied.x.length; }
     @live public get branchedX(): number { return branched.x.length; }
     @live public get indexedX(): number { return indexed.x.length; }
     @live public get elementX(): number { return element.x.length; }
