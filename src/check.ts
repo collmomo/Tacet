@@ -133,14 +133,19 @@ function unwrapValue(node: ts.Node): ts.Node {
     return inner;
 }
 
-/** The module-level const whose literal initializer holds `node` in a slot, through nested literals and wrappers; nothing otherwise. */
+/** A `const` declared at the top of a module, under its own name. */
+function isModuleConst(declaration: ts.Node): declaration is ts.VariableDeclaration {
+    if (!ts.isVariableDeclaration(declaration) || !ts.isIdentifier(declaration.name)) return false;
+    const list = declaration.parent;
+    return ts.isVariableDeclarationList(list) && (list.flags & ts.NodeFlags.Const) !== 0 && ts.isVariableStatement(list.parent) && ts.isSourceFile(list.parent.parent);
+}
+
+/** The module const whose literal initializer holds `node` in a slot, through nested literals and wrappers; a destructuring is a read of the parts, not a holder. */
 function findHoldingConst(node: ts.Node): ts.VariableDeclaration | undefined {
     let current: ts.Node = node;
     while (isLiteralSlot(current.parent, current) || isValueWrapper(current.parent) || ts.isShorthandPropertyAssignment(current.parent)) current = current.parent;
     const declaration = current.parent;
-    if (!ts.isVariableDeclaration(declaration) || declaration.initializer !== current) return undefined;
-    const list = declaration.parent;
-    return ts.isVariableDeclarationList(list) && (list.flags & ts.NodeFlags.Const) !== 0 && ts.isVariableStatement(list.parent) && ts.isSourceFile(list.parent.parent) ? declaration : undefined;
+    return isModuleConst(declaration) && declaration.initializer === current ? declaration : undefined;
 }
 
 /** The initializer of a `const`, unwrapped, or nothing for anything else. */
@@ -196,6 +201,8 @@ class Analysis {
     /** Every module-level const of a file, classified in one walk of the file: written, or never. */
     private readonly writtenConsts = new Map<ts.SourceFile, Map<ts.VariableDeclaration, boolean>>();
     private readonly classifying = new Set<ts.SourceFile>();
+    /** What each module const holds, evaluated once. */
+    private readonly constSources = new Map<ts.VariableDeclaration, Source>();
     private current: Set<ts.Declaration> | undefined;
     private template = false;
     /** Above zero while an outer const's initializer is evaluated: it ran once, so its reads are nobody's. */
@@ -584,21 +591,21 @@ class Analysis {
             return "leaf";
         }
         if (declaration.initializer === undefined || this.stack.has(declaration)) return "fixed";
+        const module = isModuleConst(declaration);
+        const cached = module ? this.constSources.get(declaration) : undefined;
+        if (cached !== undefined) return cached;
         this.stack.add(declaration);
-        this.muted++;
-        const troubled = this.mutedErrors;
         let source: Source;
         try {
-            source = this.evaluateExpression(declaration.initializer, {locals: frame.locals, thisSource: "leaf"});
+            source = this.evaluateMuted(declaration.initializer, {locals: frame.locals, thisSource: "leaf"});
         } finally {
-            this.muted--;
             this.stack.delete(declaration);
         }
-        // A value the check could not follow (a library object that changes, a plain field) stays fixed, its reads judged where they happen; a literal's slots are judged one by one.
-        if (this.mutedErrors > troubled && source !== "fresh") return "fixed";
-        // A module const nothing writes keeps a literal fresh; anything else it holds keeps its own source, an alias of a library object included.
-        if (ts.isVariableDeclarationList(list) && ts.isVariableStatement(list.parent) && ts.isSourceFile(list.parent.parent) && !this.isWrittenConst(declaration)) return source;
-        return source === "fresh" ? "fixed" : source;
+        // A module const nothing writes keeps a literal fresh; anything else it holds is fixed in place, an alias of a library object, a call's result, included.
+        if (module && !this.isWrittenConst(declaration)) source = source === "fresh" ? "fresh" : source === "leaf" ? "fixed" : source;
+        else source = source === "fresh" ? "fixed" : source;
+        if (module) this.constSources.set(declaration, source);
+        return source;
     }
 
     /** A module-level const anyone may write is not a value: one exported, or referenced in its file other than as a plain read. */
@@ -670,17 +677,18 @@ class Analysis {
         if (baseSource === "fresh") {
             // A const's literal says what each property holds: its own literal is fresh, an alias of something else keeps that thing's source.
             const slot = this.findLiteralProperty(base, name);
-            if (slot !== undefined) return this.readLiteralSlot(slot, frame);
+            const held = slot === undefined ? undefined : this.readLiteralSlot(slot, frame);
+            if (held !== undefined) return held;
         }
         const property = ts.isPropertyAccessExpression(node) ? this.checker.getSymbolAtLocation(node.name) : this.checker.getPropertyOfType(baseType.getNonNullableType(), name);
         return this.readMember(node, base, baseSource, baseType, name, property);
     }
 
-    /** What a property of a const's literal holds, evaluated muted: it was built once. */
-    private readLiteralSlot(slot: ts.ObjectLiteralElementLike, frame: Frame): Source {
+    /** What a property of a const's literal holds, evaluated muted: it was built once. An accessor or a method is read like any member. */
+    private readLiteralSlot(slot: ts.ObjectLiteralElementLike, frame: Frame): Source | undefined {
         if (ts.isPropertyAssignment(slot)) return this.evaluateMuted(slot.initializer, frame);
         if (ts.isShorthandPropertyAssignment(slot)) return this.evaluateMuted(slot.name, frame, this.checker.getShorthandAssignmentValueSymbol(slot));
-        return "fixed";
+        return undefined;
     }
 
     /** Evaluates an expression that ran once, reporting nothing; what could not be followed is fixed, its reads judged where they happen. */
@@ -693,7 +701,8 @@ class Analysis {
         } finally {
             this.muted--;
         }
-        return this.mutedErrors > troubled ? "fixed" : source;
+        // A value the check could not follow stays fixed, its reads judged where they happen; a literal's slots are judged one by one.
+        return this.mutedErrors > troubled && source !== "fresh" ? "fixed" : source;
     }
 
     private readMember(node: ts.Node, base: ts.Expression, baseSource: Source, baseType: ts.Type, name: string, property: ts.Symbol | undefined): Source {

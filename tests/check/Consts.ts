@@ -237,6 +237,14 @@ const heldKids = {inner: kids, items: [1]};
 const kidsAlias = kids;
 const doc = document;
 
+const destructured = {x: [1]};
+const {x: taken} = destructured;
+taken.push(2);
+
+const holdsCount = {inner: count};
+
+const accessed2 = {get inner(): {items: number[]} { return {items: [1]}; }};
+
 const casted = {x: [1]};
 (casted.x.push as (n: number) => number)(2);
 
@@ -320,6 +328,9 @@ export class ConstsView {
     @live public get heldKidsItems(): number { return heldKids.items.length; }
     @live public get kidsAliasCount(): number { return kidsAlias.length; }
     @live public get docCount(): number { return doc.body.children.length; }
+    @live public get destructuredX(): number { return destructured.x.length; }
+    @live public get holdsCountItems(): number { return holdsCount.inner.items.length; }
+    @live public get accessed2Items(): number { return accessed2.inner.items.length; }
     @live public get branchedX(): number { return branched.x.length; }
     @live public get indexedX(): number { return indexed.x.length; }
     @live public get elementX(): number { return element.x.length; }
