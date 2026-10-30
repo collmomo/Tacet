@@ -163,6 +163,31 @@ type Loop = string & {__brand: Loop};
 const looping = {x: "a" as Loop};
 export const loopingLength = looping.x.trim().length;
 
+interface Bumper { x: number; bump: (n: number) => string; }
+const bumping: Bumper = {x: 1, bump(n: number): string { this.x += n; return ""; }};
+bumping.bump(2);
+
+function bumpThis(this: {x: number}): void { this.x++; }
+const shorthandBump = {x: 1, bumpThis};
+shorthandBump.bumpThis();
+
+const accessed = {x: 1, get f(): () => number { this.x++; return () => 1; }};
+accessed.f();
+
+const satisfied2 = {x: 1, f: function (this: {x: number}): void { this.x++; } satisfies (this: {x: number}) => void};
+satisfied2.f();
+
+const augmented = {x: [1]};
+augmented.fillAll();
+
+type Indexed = string & {[key: string]: number[]};
+const indexedBrand = {x: {} as Indexed};
+indexedBrand.x.list.push(1);
+
+interface VoidThis { x: number; format: (this: void, n: number) => string; }
+const voidThis: VoidThis = {x: 1, format: (n: number): string => String(n)};
+export const voidText = voidThis.format(2);
+
 const casted = {x: [1]};
 (casted.x.push as (n: number) => number)(2);
 
@@ -223,6 +248,13 @@ export class ConstsView {
     @live public get stringifiedX(): number { return stringified.x.length; }
     @live public get taggedX(): number { return tagged.x.length; }
     @live public get loopingX(): number { return looping.x.length; }
+    @live public get bumpingX(): number { return bumping.x; }
+    @live public get shorthandBumpX(): number { return shorthandBump.x; }
+    @live public get accessedX(): number { return accessed.x; }
+    @live public get satisfied2X(): number { return satisfied2.x; }
+    @live public get augmentedX(): number { return augmented.x.length; }
+    @live public get indexedBrandX(): number { return indexedBrand.x.length; }
+    @live public get voidThisX(): number { return voidThis.x; }
     @live public get branchedX(): number { return branched.x.length; }
     @live public get indexedX(): number { return indexed.x.length; }
     @live public get elementX(): number { return element.x.length; }

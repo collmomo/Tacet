@@ -127,9 +127,9 @@ function climbValue(node: ts.Node): ts.Node {
 
 const PRIMITIVE_FLAGS = ts.TypeFlags.StringLike | ts.TypeFlags.NumberLike | ts.TypeFlags.BooleanLike | ts.TypeFlags.BigIntLike | ts.TypeFlags.ESSymbolLike | ts.TypeFlags.EnumLike | ts.TypeFlags.Void | ts.TypeFlags.Undefined | ts.TypeFlags.Null | ts.TypeFlags.Never;
 
-function unwrapParenthesesOf(node: ts.Node): ts.Node {
+function unwrapValue(node: ts.Node): ts.Node {
     let inner = node;
-    while (ts.isParenthesizedExpression(inner)) inner = inner.expression;
+    while (isValueWrapper(inner)) inner = inner.expression;
     return inner;
 }
 
@@ -173,6 +173,7 @@ class Analysis {
     public readonly getterReads = new Map<ts.Declaration, Set<ts.Declaration>>();
     private readonly checker: ts.TypeChecker;
     private readonly locate: Locate;
+    private readonly isDefaultLibrary: (file: ts.SourceFile) => boolean;
     private readonly stack = new Set<ts.Node>();
     private readonly getterResults = new Map<ts.GetAccessorDeclaration, Source>();
     /** Every module-level const of a file, classified in one walk of the file: written, or never. */
@@ -180,9 +181,10 @@ class Analysis {
     private current: Set<ts.Declaration> | undefined;
     private template = false;
 
-    constructor(checker: ts.TypeChecker, locate: Locate) {
+    constructor(checker: ts.TypeChecker, locate: Locate, isDefaultLibrary: (file: ts.SourceFile) => boolean) {
         this.checker = checker;
         this.locate = locate;
+        this.isDefaultLibrary = isDefaultLibrary;
     }
 
     private noteRead(declaration: ts.Declaration): void {
@@ -231,25 +233,61 @@ class Analysis {
         if (seen.has(type)) return true;
         seen.add(type);
         if (type.isUnion() || type.isIntersection()) return type.types.every(part => this.holdsNoData(part, seen));
-        return type.getCallSignatures().length === 0 && this.nameContainer(type) === undefined && type.getProperties().every(property => this.holdsNoData(this.checker.getTypeOfSymbol(property), seen));
+        if (type.getCallSignatures().length > 0 || type.getConstructSignatures().length > 0 || this.checker.getIndexInfosOfType(type).length > 0 || this.nameContainer(type) !== undefined) return false;
+        return type.getProperties().every(property => this.holdsNoData(this.checker.getTypeOfSymbol(property), seen));
     }
 
-    /** What a project declaration of a callee may do to what holds it: a method can reach it through `this`, a held arrow cannot. */
+    /** What a project declaration of a callee may do to what holds it: a method can reach it through `this`; only a provable arrow cannot. */
     private readProjectCalleeEffect(declaration: ts.Declaration): CallEffect {
-        if (ts.isMethodDeclaration(declaration) || ts.isMethodSignature(declaration) || isClassMember(declaration)) return "mutates";
-        if (ts.isPropertyAssignment(declaration) && ts.isFunctionExpression(unwrapParenthesesOf(declaration.initializer))) return "mutates";
-        return "passes";
+        if (ts.isPropertySignature(declaration) || ts.isPropertyDeclaration(declaration)) {
+            // A function type with an explicit `this: void` binds nothing.
+            const type = declaration.type;
+            if (type !== undefined && ts.isFunctionTypeNode(type) && type.parameters.some(parameter => ts.isIdentifier(parameter.name) && parameter.name.text === "this" && parameter.type?.kind === ts.SyntaxKind.VoidKeyword)) return "passes";
+        }
+        if (ts.isShorthandPropertyAssignment(declaration)) return this.isArrowDeclaration(this.findDeclaration(this.checker.getShorthandAssignmentValueSymbol(declaration))) ? "passes" : "mutates";
+        const initializer = ts.isPropertyAssignment(declaration) || ts.isPropertyDeclaration(declaration) ? declaration.initializer : undefined;
+        return initializer !== undefined && this.isArrowValue(initializer) ? "passes" : "mutates";
     }
 
-    /** What a library declaration of a callee may do: a container's mutator writes, Object's and Function's members never, any other library object's may. */
-    private readLibraryCalleeEffect(declarations: ts.Declaration[], receiver: ts.Node, baseType: ts.Type, name: string): CallEffect {
+    /** Whether an expression is an arrow function in plain sight, under wrappers or behind a const's name. */
+    private isArrowValue(expression: ts.Expression): boolean {
+        const inner = unwrapValue(expression);
+        if (ts.isArrowFunction(inner)) return true;
+        return ts.isIdentifier(inner) && this.isArrowDeclaration(this.findDeclaration(this.checker.getSymbolAtLocation(inner)));
+    }
+
+    private isArrowDeclaration(declaration: ts.Declaration | undefined): boolean {
+        if (declaration === undefined || !ts.isVariableDeclaration(declaration) || declaration.initializer === undefined) return false;
+        const list = declaration.parent;
+        return ts.isVariableDeclarationList(list) && (list.flags & ts.NodeFlags.Const) !== 0 && ts.isArrowFunction(unwrapValue(declaration.initializer));
+    }
+
+    /** The property of the object literal a const names, when the receiver is that const in plain sight: the implementation, not the interface. */
+    private findLiteralProperty(receiver: ts.Node, name: string): ts.ObjectLiteralElementLike | undefined {
+        const inner = unwrapValue(receiver);
+        if (!ts.isIdentifier(inner)) return undefined;
+        const declaration = this.findDeclaration(this.checker.getSymbolAtLocation(inner));
+        if (declaration === undefined || !ts.isVariableDeclaration(declaration) || declaration.initializer === undefined) return undefined;
+        const literal = unwrapValue(declaration.initializer);
+        if (!ts.isObjectLiteralExpression(literal)) return undefined;
+        return literal.properties.find(property => property.name !== undefined && ts.isIdentifier(property.name) && property.name.text === name);
+    }
+
+    /** What a library declaration of a callee may do: a container's mutator writes, Object's and Function's own members never, any other library object's may. */
+    private readLibraryCalleeEffect(fromObjectOrFunction: boolean, receiver: ts.Node, baseType: ts.Type, name: string): CallEffect {
         if (baseType.getCallSignatures().length > 0) {
             // `f.call(...)`, `f.apply(...)` run the receiver; `f.bind(...)` hands it on to be run; what it would do, called itself.
             return name === "call" || name === "apply" || name === "bind" ? this.readCalleeEffect(receiver) : "passes";
         }
-        if (declarations.every(declaration => ts.isInterfaceDeclaration(declaration.parent) && (declaration.parent.name.text === "Object" || declaration.parent.name.text === "Function"))) return "passes";
+        if (fromObjectOrFunction) return "passes";
         if (this.nameContainer(baseType) === undefined) return "mutates";
         return MUTATORS.has(name) ? "mutates" : "passes";
+    }
+
+    /** Whether a declaration is a member of the default library's own `Object` or `Function` interface, never a project's augmentation. */
+    private isDefaultObjectMember(declaration: ts.Declaration): boolean {
+        const parent = declaration.parent;
+        return ts.isInterfaceDeclaration(parent) && (parent.name.text === "Object" || parent.name.text === "Function") && this.isDefaultLibrary(declaration.getSourceFile());
     }
 
     /** What a callee does to the data it is reached through, by its declaration: on a branched callee, the worst branch. */
@@ -274,12 +312,23 @@ class Analysis {
             else if (keyType.getFlags() & ts.TypeFlags.NumberLike) return "passes";
             else return "mutates";
         }
+        // A const's own literal says what its property really is, where an interface only says its type.
+        const implementation = this.findLiteralProperty(callee.expression, name);
+        if (implementation !== undefined) return this.readProjectCalleeEffect(implementation);
         const declarations = this.checker.getPropertyOfType(baseType.getNonNullableType(), name)?.declarations ?? [];
         if (declarations.length === 0) return "mutates";
         // A union's property has one declaration per part; the worst decides, the library's judged once.
-        const library = declarations.filter(declaration => declaration.getSourceFile().isDeclarationFile);
-        const effects = declarations.filter(declaration => !declaration.getSourceFile().isDeclarationFile).map(declaration => this.readProjectCalleeEffect(declaration));
-        if (library.length > 0) effects.push(this.readLibraryCalleeEffect(library, callee.expression, baseType, name));
+        const effects: CallEffect[] = [];
+        let libraryCount = 0;
+        let fromObjectOrFunction = true;
+        for (const declaration of declarations) {
+            if (!declaration.getSourceFile().isDeclarationFile) effects.push(this.readProjectCalleeEffect(declaration));
+            else {
+                libraryCount++;
+                fromObjectOrFunction &&= this.isDefaultObjectMember(declaration);
+            }
+        }
+        if (libraryCount > 0) effects.push(this.readLibraryCalleeEffect(fromObjectOrFunction, callee.expression, baseType, name));
         return worstEffect(...effects);
     }
 
@@ -1172,7 +1221,7 @@ function checkFiles(files: string[], compilerOptions: ts.CompilerOptions, virtua
         const {line, character} = file.getLineAndCharacterOfPosition(position);
         return {file: file.fileName, line: line + 1, column: character + 1};
     };
-    const analysis = new Analysis(checker, locatePosition);
+    const analysis = new Analysis(checker, locatePosition, file => program.isSourceFileDefaultLibrary(file));
 
     const marked: {node: ts.PropertyDeclaration; file: ts.SourceFile}[] = [];
     for (const file of program.getSourceFiles()) {
