@@ -104,21 +104,41 @@ function isUnderConstAssertion(declaration: ts.Node): boolean {
     return ts.isAsExpression(literal.parent) && ts.isConstTypeReference(literal.parent.type);
 }
 
-/** A wrapper that hands its operand on unchanged: parentheses, `!`, `as`, `satisfies`, `<T>`, the right side of a comma. */
-function isTransparentWrapper(parent: ts.Node, node: ts.Node): boolean {
+/** Whether `parent` carries `node`'s own value on: parentheses, `!`, a cast, a branch of `?:`, `||`, `??`, `&&`, the right side of a comma. */
+function carriesValue(parent: ts.Node, node: ts.Node): boolean {
     if (ts.isParenthesizedExpression(parent) || ts.isNonNullExpression(parent) || ts.isAsExpression(parent) || ts.isSatisfiesExpression(parent) || ts.isTypeAssertionExpression(parent)) return true;
-    return ts.isBinaryExpression(parent) && parent.operatorToken.kind === ts.SyntaxKind.CommaToken && parent.right === node;
+    if (ts.isConditionalExpression(parent)) return parent.condition !== node;
+    if (!ts.isBinaryExpression(parent)) return false;
+    const kind = parent.operatorToken.kind;
+    return kind === ts.SyntaxKind.QuestionQuestionToken || kind === ts.SyntaxKind.BarBarToken || kind === ts.SyntaxKind.AmpersandAmpersandToken || (kind === ts.SyntaxKind.CommaToken && parent.right === node);
+}
+
+/** The outermost expression that still holds `node`'s own value. */
+function climbValue(node: ts.Node): ts.Node {
+    let current = node;
+    while (carriesValue(current.parent, current)) current = current.parent;
+    return current;
+}
+
+function unwrapParentheses(node: ts.Node): ts.Node {
+    let inner = node;
+    while (ts.isParenthesizedExpression(inner)) inner = inner.expression;
+    return inner;
 }
 
 /** Whether `node` is assigned, counted, deleted or mutated through a method, itself or through a path into it. */
 function isWriteTarget(node: ts.Node): boolean {
-    let target = node;
+    let target = climbValue(node);
     for (;;) {
         const parent = target.parent;
-        if (ts.isCallExpression(parent) && parent.expression === target) {
-            // A call on the path writes only through a mutator; what it returns is not the field.
-            return ts.isPropertyAccessExpression(target) && MUTATORS.has(target.name.text);
-        } else if (!((ts.isPropertyAccessExpression(parent) || ts.isElementAccessExpression(parent)) && parent.expression === target) && !isTransparentWrapper(parent, target)) {
+        if ((ts.isPropertyAccessExpression(parent) || ts.isElementAccessExpression(parent)) && parent.expression === target) {
+            target = climbValue(parent);
+        } else if (ts.isCallExpression(parent) && parent.expression === target) {
+            // A mutator writes; any other call may hand back the field's own data (find, at, get), so a write to its result is a write.
+            const callee = unwrapParentheses(target);
+            if (ts.isPropertyAccessExpression(callee) && MUTATORS.has(callee.name.text)) return true;
+            target = climbValue(parent);
+        } else {
             if (ts.isBinaryExpression(parent)) return parent.left === target && isAssignmentOperator(parent.operatorToken.kind);
             if (ts.isPrefixUnaryExpression(parent) || ts.isPostfixUnaryExpression(parent)) return isCountOperator(parent.operator);
             if (ts.isForOfStatement(parent) || ts.isForInStatement(parent)) return parent.initializer === target;
@@ -130,7 +150,6 @@ function isWriteTarget(node: ts.Node): boolean {
             if (ts.isBinaryExpression(holder)) return holder.left === literal && holder.operatorToken.kind === ts.SyntaxKind.EqualsToken;
             return (ts.isForOfStatement(holder) || ts.isForInStatement(holder)) && holder.initializer === literal;
         }
-        target = parent;
     }
 }
 
@@ -141,21 +160,9 @@ function isTypeQueryName(node: ts.Node): boolean {
     return ts.isTypeQueryNode(name.parent);
 }
 
-function isValuePassingOperator(kind: ts.SyntaxKind): boolean {
-    return kind === ts.SyntaxKind.QuestionQuestionToken || kind === ts.SyntaxKind.BarBarToken || kind === ts.SyntaxKind.AmpersandAmpersandToken || kind === ts.SyntaxKind.CommaToken;
-}
-
 /** Whether `reference` only reads the name in place: the value neither reaches another holder nor is written through it. */
 function isPlainRead(reference: ts.Node): boolean {
-    let node = reference;
-    for (;;) {
-        const parent = node.parent;
-        const passesValue = ts.isParenthesizedExpression(parent) || ts.isNonNullExpression(parent) || ts.isAsExpression(parent) || ts.isTypeAssertionExpression(parent) || ts.isSatisfiesExpression(parent)
-            || (ts.isConditionalExpression(parent) && parent.condition !== node)
-            || (ts.isBinaryExpression(parent) && isValuePassingOperator(parent.operatorToken.kind));
-        if (!passesValue) break;
-        node = parent;
-    }
+    const node = climbValue(reference);
     const parent = node.parent;
     if ((ts.isPropertyAccessExpression(parent) || ts.isElementAccessExpression(parent)) && parent.expression === node) return !isWriteTarget(node);
     if (ts.isCallExpression(parent)) return parent.expression === node || (ts.isIdentifier(parent.expression) && PRELUDE_HELPERS.has(parent.expression.text));
@@ -846,8 +853,9 @@ function buildVirtualFile(tacet: string, source: string): VirtualFile {
     let propsType = "any";
     if (script !== null) {
         parts.push(script.content);
+        const promoted = descriptor.scriptSetup === null ? promoteScriptToSetup(source, script.loc.start.offset) : undefined;
         try {
-            const setup = descriptor.scriptSetup === null ? parseSfc(promoteScriptToSetup(source, script.loc.start.offset), {filename: tacet}).descriptor : descriptor;
+            const setup = promoted === undefined ? descriptor : parseSfc(promoted, {filename: tacet}).descriptor;
             const compiled = compileScript(setup, {id: tacet});
             propNames = Object.entries(compiled.bindings ?? {}).filter(([, kind]) => kind === "props").map(([name]) => name);
             const typeArgument = /defineProps\s*<([^]*?)>\s*\(/.exec(script.content);

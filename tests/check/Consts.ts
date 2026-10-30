@@ -50,9 +50,21 @@ const satisfied = {x: {y: 1}};
 const sequenced = {x: {y: 1}};
 (0, sequenced.x).y = 2;
 
+const found = {x: [{y: 1}]};
+found.x.find(() => true)!.y = 2;
+
+const ored = {x: {y: 1}};
+(ored.x || {y: 0}).y = 2;
+
+const chosen = {x: {y: 1}};
+(Math.random() > 2 ? chosen.x : {y: 0}).y = 2;
+
+const wrapped = {x: [1]};
+(wrapped.x.push)(2);
+
 const copied = {x: [1]};
-copied.x.slice().push(2);
-copied.x.map(n => n)[0] = 1;
+const copy = copied.x.slice();
+export const copyLength = copy.length;
 
 export class ConstsView {
     @live public get loopedN(): number { return looped[0].n; }
@@ -71,5 +83,8 @@ export class ConstsView {
     @live public get assertedX(): number { return asserted.x.y; }
     @live public get satisfiedX(): number { return satisfied.x.y; }
     @live public get sequencedX(): number { return sequenced.x.y; }
-    @live public get copiedX(): number { return copied.x.length; }
+    @live public get foundX(): number { return found.x.length; }
+    @live public get oredX(): number { return ored.x.y; }
+    @live public get chosenX(): number { return chosen.x.y; }
+    @live public get wrappedX(): number { return wrapped.x.length; }
 }

@@ -91,9 +91,9 @@ describe("the getter check", () => {
         expect(checkFixture("Alias.ts").map(d => [d.line, d.message])).toEqual([[8, written]]);
     });
 
-    it("keeps a const a value through a for...of, a for...in, a typeof type and a copy into a literal, and loses it to a destructuring, a loop target and every write through parentheses, a cast or a comma, while a call's result is not the field", () => {
+    it("keeps a const a value through a for...of, a for...in, a typeof type and a copy into a literal, and loses it to a destructuring, a loop target and every write through parentheses, a cast, a comma, a fallback, a branch or a call's result", () => {
         const written = (name: string): string => `"${name}.x": "x" is a plain property that can change by mutation, and the object is not followed. Hold the object in a @deep field, or declare "x" readonly.`;
-        expect(checkFixture("Consts.ts").map(d => [d.line, d.message])).toEqual([[61, written("spread")], [62, written("target")], [63, written("pattern")], [64, written("paren")], [66, written("counted")], [67, written("added")], [68, written("deleted")], [69, written("pushed")], [70, written("pathed")], [71, written("asserted")], [72, written("satisfied")], [73, written("sequenced")]]);
+        expect(checkFixture("Consts.ts").map(d => [d.line, d.message])).toEqual([[73, written("spread")], [74, written("target")], [75, written("pattern")], [76, written("paren")], [78, written("counted")], [79, written("added")], [80, written("deleted")], [81, written("pushed")], [82, written("pathed")], [83, written("asserted")], [84, written("satisfied")], [85, written("sequenced")], [86, written("found")], [87, written("ored")], [88, written("chosen")], [89, written("wrapped")]]);
     });
 });
 
