@@ -58,8 +58,6 @@ const WALKER_RESULTS = new Set(["Object.values", "Object.entries", "Object.assig
 const PURE_GLOBALS = new Set(["Math", "JSON", "Object", "Array", "Number", "String", "Boolean", "BigInt", "Symbol", "Reflect", "Intl"]);
 /** The methods that write into an array, a Map or a Set: a const they are called on is written. */
 const MUTATORS = new Set(["push", "pop", "shift", "unshift", "splice", "sort", "reverse", "fill", "copyWithin", "set", "add", "delete", "clear"]);
-/** Methods that hand back a new container holding the field's elements, never the field's own container. */
-const FRESH_CONTAINER_METHODS = new Set(["slice", "filter", "map", "concat", "flat", "flatMap", "toSorted", "toReversed", "toSpliced", "with", "split", "join", "toString", "entries", "keys", "values"]);
 /** The template prelude's helpers, which only read their argument. */
 const PRELUDE_HELPERS = new Set(["__each", "__event", "__ref"]);
 
@@ -106,9 +104,14 @@ function isUnderConstAssertion(declaration: ts.Node): boolean {
     return ts.isAsExpression(literal.parent) && ts.isConstTypeReference(literal.parent.type);
 }
 
-/** Whether `parent` carries `node`'s own value on: parentheses, `!`, a cast, a branch of `?:`, `||`, `??`, `&&`, the right side of a comma. */
+/** A node that hands its operand's value on unchanged: parentheses, `!`, `as`, `satisfies`, `<T>`. */
+function isValueWrapper(node: ts.Node): node is ts.ParenthesizedExpression | ts.NonNullExpression | ts.AsExpression | ts.SatisfiesExpression | ts.TypeAssertion {
+    return ts.isParenthesizedExpression(node) || ts.isNonNullExpression(node) || ts.isAsExpression(node) || ts.isSatisfiesExpression(node) || ts.isTypeAssertionExpression(node);
+}
+
+/** Whether `parent` carries `node`'s own value on: a wrapper, a branch of `?:`, `||`, `??`, `&&`, the right side of a comma. */
 function carriesValue(parent: ts.Node, node: ts.Node): boolean {
-    if (ts.isParenthesizedExpression(parent) || ts.isNonNullExpression(parent) || ts.isAsExpression(parent) || ts.isSatisfiesExpression(parent) || ts.isTypeAssertionExpression(parent)) return true;
+    if (isValueWrapper(parent)) return true;
     if (ts.isConditionalExpression(parent)) return parent.condition !== node;
     if (!ts.isBinaryExpression(parent)) return false;
     const kind = parent.operatorToken.kind;
@@ -122,56 +125,30 @@ function climbValue(node: ts.Node): ts.Node {
     return current;
 }
 
-/** The method name a callee names, through every wrapper `carriesValue` climbs; `undefined` for a computed or unknown name. */
-function readCalleeName(callee: ts.Node): string | undefined {
-    if (ts.isPropertyAccessExpression(callee)) return callee.name.text;
-    if (ts.isElementAccessExpression(callee)) return ts.isStringLiteralLike(callee.argumentExpression) ? callee.argumentExpression.text : undefined;
-    if (ts.isParenthesizedExpression(callee) || ts.isNonNullExpression(callee) || ts.isAsExpression(callee) || ts.isSatisfiesExpression(callee) || ts.isTypeAssertionExpression(callee)) return readCalleeName(callee.expression);
-    if (ts.isConditionalExpression(callee)) return readCalleeName(callee.whenTrue) ?? readCalleeName(callee.whenFalse);
-    if (ts.isBinaryExpression(callee)) return readCalleeName(callee.right) ?? readCalleeName(callee.left);
-    return undefined;
-}
-
-/** Whether a callee may be a mutator: a known one, or one whose name the build cannot read. */
+/** Whether a callee may be a mutator: a known name on any branch, or a name the build cannot read. */
 function mayMutate(callee: ts.Node): boolean {
-    const name = readCalleeName(callee);
-    return name === undefined ? ts.isElementAccessExpression(unwrapValue(callee)) : MUTATORS.has(name);
-}
-
-function unwrapValue(node: ts.Node): ts.Node {
-    let inner = node;
-    while (ts.isParenthesizedExpression(inner) || ts.isNonNullExpression(inner) || ts.isAsExpression(inner) || ts.isSatisfiesExpression(inner) || ts.isTypeAssertionExpression(inner)) inner = inner.expression;
-    return inner;
-}
-
-/** Whether `node` is directly assigned, counted or deleted. */
-function isWrittenInPlace(node: ts.Node): boolean {
-    const target = climbValue(node);
-    const parent = target.parent;
-    if (ts.isBinaryExpression(parent)) return parent.left === target && isAssignmentOperator(parent.operatorToken.kind);
-    if (ts.isPrefixUnaryExpression(parent) || ts.isPostfixUnaryExpression(parent)) return isCountOperator(parent.operator);
-    return ts.isDeleteExpression(parent);
+    if (isValueWrapper(callee)) return mayMutate(callee.expression);
+    if (ts.isConditionalExpression(callee)) return mayMutate(callee.whenTrue) || mayMutate(callee.whenFalse);
+    if (ts.isBinaryExpression(callee)) return mayMutate(callee.right) || (callee.operatorToken.kind !== ts.SyntaxKind.CommaToken && mayMutate(callee.left));
+    if (ts.isPropertyAccessExpression(callee)) return MUTATORS.has(callee.name.text);
+    if (ts.isElementAccessExpression(callee)) {
+        const key = callee.argumentExpression;
+        if (ts.isStringLiteralLike(key)) return MUTATORS.has(key.text);
+        return !ts.isNumericLiteral(key);
+    }
+    return false;
 }
 
 /** Whether `node` is assigned, counted, deleted or mutated through a method, itself or through a path into it. */
 function isWriteTarget(node: ts.Node): boolean {
     let target = climbValue(node);
-    let fresh = false;
     for (;;) {
         const parent = target.parent;
         if ((ts.isPropertyAccessExpression(parent) || ts.isElementAccessExpression(parent)) && parent.expression === target) {
-            const access = climbValue(parent);
-            if (fresh) {
-                // The first step into a fresh container is its own slot or method: a write there is not the field's.
-                fresh = false;
-                const call = access.parent;
-                const isCallee = ts.isCallExpression(call) && call.expression === access;
-                if (isCallee ? mayMutate(access) : isWrittenInPlace(access)) return false;
-            }
-            target = access;
+            target = climbValue(parent);
         } else if (ts.isCallExpression(parent) && parent.expression === target) {
+            // A mutator writes; any other call may hand back the field's own data (find, at, get, a method of a class), so a write to its result is a write.
             if (mayMutate(target)) return true;
-            fresh = FRESH_CONTAINER_METHODS.has(readCalleeName(target) ?? "");
             target = climbValue(parent);
         } else {
             if (ts.isBinaryExpression(parent)) return parent.left === target && isAssignmentOperator(parent.operatorToken.kind);
@@ -888,14 +865,8 @@ function buildVirtualFile(tacet: string, source: string): VirtualFile {
     let propsType = "any";
     if (script !== null) {
         parts.push(script.content);
-        let promoted: string | undefined;
         try {
-            promoted = descriptor.scriptSetup === null ? promoteScriptToSetup(source, script.loc.start.offset) : undefined;
-        } catch (error) {
-            diagnostics.push({file: tacet, ...findLineColumn(source, script.loc.start.offset), level: "error", message: error instanceof Error ? error.message : String(error)});
-        }
-        try {
-            const setup = promoted === undefined ? descriptor : parseSfc(promoted, {filename: tacet}).descriptor;
+            const setup = descriptor.scriptSetup === null ? parseSfc(promoteScriptToSetup(source, script.loc.start.offset), {filename: tacet}).descriptor : descriptor;
             const compiled = compileScript(setup, {id: tacet});
             propNames = Object.entries(compiled.bindings ?? {}).filter(([, kind]) => kind === "props").map(([name]) => name);
             const typeArgument = /defineProps\s*<([^]*?)>\s*\(/.exec(script.content);

@@ -91,9 +91,9 @@ describe("the getter check", () => {
         expect(checkFixture("Alias.ts").map(d => [d.line, d.message])).toEqual([[8, written]]);
     });
 
-    it("keeps a const a value through a for...of, a for...in, a typeof type and a copy into a literal, and loses it to a destructuring, a loop target and every write through parentheses, a cast, a comma, a fallback, a branch, a mutator under any wrapper or a call's own result, while a fresh copy's own slot is not", () => {
+    it("keeps a const a value through a for...of, a for...in, a typeof type and a copy into a literal, and loses it to a destructuring, a loop target and every write through parentheses, a cast, a comma, a fallback, a branch, a mutator under any wrapper or on any branch, or any call's result, while a function held in a slot is only called", () => {
         const written = (name: string): string => `"${name}.x": "x" is a plain property that can change by mutation, and the object is not followed. Hold the object in a @deep field, or declare "x" readonly.`;
-        expect(checkFixture("Consts.ts").map(d => [d.line, d.message])).toEqual([[91, written("spread")], [92, written("target")], [93, written("pattern")], [94, written("paren")], [96, written("counted")], [97, written("added")], [98, written("deleted")], [99, written("pushed")], [100, written("pathed")], [101, written("asserted")], [102, written("satisfied")], [103, written("sequenced")], [104, written("found")], [105, written("ored")], [106, written("chosen")], [107, written("wrapped")], [109, written("element")], [110, written("casted")], [111, written("asserted2")], [112, written("keyed2")], [113, written("named")]]);
+        expect(checkFixture("Consts.ts").map(d => [d.line, d.message])).toEqual([[95, written("spread")], [96, written("target")], [97, written("pattern")], [98, written("paren")], [100, written("counted")], [101, written("added")], [102, written("deleted")], [103, written("pushed")], [104, written("pathed")], [105, written("asserted")], [106, written("satisfied")], [107, written("sequenced")], [108, written("found")], [109, written("ored")], [110, written("chosen")], [111, written("wrapped")], [112, written("copied")], [113, written("branched")], [115, written("element")], [116, written("casted")], [117, written("asserted2")], [118, written("keyed2")], [119, written("named")]]);
     });
 });
 

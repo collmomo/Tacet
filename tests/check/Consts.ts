@@ -64,12 +64,16 @@ const wrapped = {x: [1]};
 
 const copied = {x: [1]};
 copied.x.slice().push(2);
-copied.x.map(n => n)[0] = 1;
-copied.x.slice().sort();
-copied.x.filter(n => n > 0).reverse().length = 0;
 
 const element = {x: [{y: 1}]};
 element.x.filter(() => true)[0].y = 2;
+
+const branched = {x: [1]};
+const key = "push";
+(Math.random() > 2 ? branched.x[key] : branched.x.slice)(2);
+
+const indexed = {x: [(n: number) => n]};
+indexed.x[0](2);
 
 const casted = {x: [1]};
 (casted.x.push as (n: number) => number)(2);
@@ -106,6 +110,8 @@ export class ConstsView {
     @live public get chosenX(): number { return chosen.x.y; }
     @live public get wrappedX(): number { return wrapped.x.length; }
     @live public get copiedX(): number { return copied.x.length; }
+    @live public get branchedX(): number { return branched.x.length; }
+    @live public get indexedX(): number { return indexed.x.length; }
     @live public get elementX(): number { return element.x.length; }
     @live public get castedX(): number { return casted.x.length; }
     @live public get asserted2X(): number { return asserted2.x.length; }
