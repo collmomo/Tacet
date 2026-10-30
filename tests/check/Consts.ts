@@ -213,6 +213,17 @@ export const methodText = methodHolder.inner.format(2);
 const helperHolder = {inner: helper};
 export const heldHelperText = helperHolder.inner.format(2);
 
+const kids = document.body.children;
+
+interface OptionalVoid { x: number; format?: (this: void, n: number) => string; }
+const optionalVoid: OptionalVoid = {x: 1, format: (n: number): string => String(n)};
+const optionalHolder = {inner: optionalVoid};
+export const optionalText = optionalHolder.inner.format?.(2);
+
+const replaced = {x: [1], f: (): void => {}};
+replaced.f = function (this: {x: number[]}): void { this.x.push(2); };
+replaced.f();
+
 const casted = {x: [1]};
 (casted.x.push as (n: number) => number)(2);
 
@@ -286,6 +297,9 @@ export class ConstsView {
     @live public get aliasHolderX(): number { return aliasHolder.inner.x; }
     @live public get methodHolderX(): number { return methodHolder.inner.x; }
     @live public get helperHolderX(): number { return helperHolder.inner.x; }
+    @live public get kidsCount(): number { return kids.length; }
+    @live public get optionalHolderX(): number { return optionalHolder.inner.x; }
+    @live public get replacedX(): number { return replaced.x.length; }
     @live public get branchedX(): number { return branched.x.length; }
     @live public get indexedX(): number { return indexed.x.length; }
     @live public get elementX(): number { return element.x.length; }

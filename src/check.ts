@@ -185,10 +185,12 @@ class Analysis {
     private readonly getterResults = new Map<ts.GetAccessorDeclaration, Source>();
     /** Every module-level const of a file, classified in one walk of the file: written, or never. */
     private readonly writtenConsts = new Map<ts.SourceFile, Map<ts.VariableDeclaration, boolean>>();
+    private readonly classifying = new Set<ts.SourceFile>();
     private current: Set<ts.Declaration> | undefined;
     private template = false;
     /** Above zero while an outer const's initializer is evaluated: it ran once, so its reads are nobody's. */
     private muted = 0;
+    private mutedErrors = 0;
 
     constructor(checker: ts.TypeChecker, locate: Locate, isDefaultLibrary: (file: ts.SourceFile) => boolean) {
         this.checker = checker;
@@ -201,7 +203,7 @@ class Analysis {
     }
 
     private reportError(node: ts.Node, message: string): void {
-        if (this.muted > 0) return;
+        if (this.muted > 0) { this.mutedErrors++; return; }
         const file = node.getSourceFile();
         this.diagnostics.push({...this.locate(file, node.getStart(file)), level: "error", message});
     }
@@ -251,10 +253,10 @@ class Analysis {
     private readProjectCalleeEffect(declaration: ts.Declaration): CallEffect {
         // A class member, an arrow field included, runs with the instance as `this`.
         if (isClassMember(declaration)) return "mutates";
-        if (ts.isPropertySignature(declaration) || ts.isMethodSignature(declaration) || ts.isPropertyDeclaration(declaration)) {
+        if (ts.isPropertySignature(declaration) || ts.isMethodSignature(declaration)) {
             // A signature whose every call binds `this: void` reaches nothing.
-            const symbol = declaration.name !== undefined ? this.checker.getSymbolAtLocation(declaration.name) : undefined;
-            const signatures = symbol === undefined ? [] : this.checker.getTypeOfSymbol(symbol).getCallSignatures();
+            const symbol = this.checker.getSymbolAtLocation(declaration.name);
+            const signatures = symbol === undefined ? [] : this.checker.getTypeOfSymbol(symbol).getNonNullableType().getCallSignatures();
             if (signatures.length > 0 && signatures.every(signature => signature.thisParameter !== undefined && (this.checker.getTypeOfSymbol(signature.thisParameter).getFlags() & ts.TypeFlags.Void) !== 0)) return "passes";
         }
         if (ts.isShorthandPropertyAssignment(declaration)) return this.isArrowDeclaration(this.findDeclaration(this.checker.getShorthandAssignmentValueSymbol(declaration))) ? "passes" : "mutates";
@@ -277,8 +279,9 @@ class Analysis {
     private findLiteralProperty(receiver: ts.Node, name: string): ts.ObjectLiteralElementLike | undefined {
         const inner = unwrapValue(receiver);
         if (!ts.isIdentifier(inner)) return undefined;
-        const literal = findConstInitializer(this.findDeclaration(this.checker.getSymbolAtLocation(inner)));
-        if (literal === undefined || !ts.isObjectLiteralExpression(literal)) return undefined;
+        const declaration = this.findDeclaration(this.checker.getSymbolAtLocation(inner));
+        const literal = findConstInitializer(declaration);
+        if (literal === undefined || !ts.isObjectLiteralExpression(literal) || this.isWrittenConst(declaration as ts.VariableDeclaration)) return undefined;
         let found: ts.ObjectLiteralElementLike | undefined;
         for (const property of literal.properties) {
             if (ts.isSpreadAssignment(property)) { if (found !== undefined) return undefined; }
@@ -287,12 +290,14 @@ class Analysis {
         return found;
     }
 
-    /** What a library declaration of a callee may do: a container's mutator writes, Object's and Function's own members never, any other library object's may. */
-    private readLibraryCalleeEffect(fromObjectOrFunction: boolean, receiver: ts.Node, baseType: ts.Type, name: string): CallEffect {
+    /** What the library's declaration of a callee may do: a container's mutator writes, Object's and Function's own members never, any other library object's may. */
+    private readLibraryCalleeEffect(allDefault: boolean, fromObjectOrFunction: boolean, receiver: ts.Node, baseType: ts.Type, name: string): CallEffect {
         if (baseType.getCallSignatures().length > 0) {
             // `f.call(...)`, `f.apply(...)` run the receiver; `f.bind(...)` hands it on to be run; what it would do, called itself.
             return name === "call" || name === "apply" || name === "bind" ? this.readCalleeEffect(receiver) : "passes";
         }
+        // Only the default library's own members are known: a dependency's or an augmentation's may change what holds them.
+        if (!allDefault) return "mutates";
         if (fromObjectOrFunction) return "passes";
         if (this.nameContainer(baseType) === undefined) return "mutates";
         return MUTATORS.has(name) ? "mutates" : "passes";
@@ -332,18 +337,20 @@ class Analysis {
         const declarations = this.checker.getPropertyOfType(baseType.getNonNullableType(), name)?.declarations ?? [];
         if (declarations.length === 0) return "mutates";
         // A union's property has one declaration per part; the worst decides, the library's judged once.
-        // The default library's declarations are judged once as the library's; a project's, a dependency's and an augmentation's each as their own.
+        // A union's property has one declaration per part; the worst decides, the library's judged once.
         const effects: CallEffect[] = [];
         let hasLibrary = false;
+        let allDefault = true;
         let fromObjectOrFunction = true;
         for (const declaration of declarations) {
-            if (!this.isDefaultLibrary(declaration.getSourceFile())) effects.push(this.readProjectCalleeEffect(declaration));
+            if (!declaration.getSourceFile().isDeclarationFile) effects.push(this.readProjectCalleeEffect(declaration));
             else {
                 hasLibrary = true;
+                allDefault &&= this.isDefaultLibrary(declaration.getSourceFile());
                 fromObjectOrFunction &&= this.isDefaultObjectMember(declaration);
             }
         }
-        if (hasLibrary) effects.push(this.readLibraryCalleeEffect(fromObjectOrFunction, callee.expression, baseType, name));
+        if (hasLibrary) effects.push(this.readLibraryCalleeEffect(allDefault, fromObjectOrFunction, callee.expression, baseType, name));
         return worstEffect(...effects);
     }
 
@@ -571,9 +578,16 @@ class Analysis {
         if (declaration.initializer === undefined || this.stack.has(declaration)) return "fixed";
         this.stack.add(declaration);
         this.muted++;
-        const source = this.evaluateExpression(declaration.initializer, {locals: frame.locals, thisSource: "leaf"});
-        this.muted--;
-        this.stack.delete(declaration);
+        const troubled = this.mutedErrors;
+        let source: Source;
+        try {
+            source = this.evaluateExpression(declaration.initializer, {locals: frame.locals, thisSource: "leaf"});
+        } finally {
+            this.muted--;
+            this.stack.delete(declaration);
+        }
+        // An initializer the check could not follow (a library object that changes, a plain field) leaves a fixed value, whose reads are judged where they happen.
+        if (this.mutedErrors > troubled) return "fixed";
         if (ts.isVariableDeclarationList(list) && ts.isVariableStatement(list.parent) && ts.isSourceFile(list.parent.parent) && !this.isWrittenConst(declaration)) return "fresh";
         return source === "fresh" ? "fixed" : source;
     }
@@ -581,9 +595,16 @@ class Analysis {
     /** A module-level const anyone may write is not a value: one exported, or referenced in its file other than as a plain read. */
     private isWrittenConst(declaration: ts.VariableDeclaration): boolean {
         const file = declaration.getSourceFile();
+        // Asked again while the file is still being classified, a const counts as written: the safe answer, never a loop.
+        if (this.classifying.has(file)) return true;
         let consts = this.writtenConsts.get(file);
         if (consts === undefined) {
-            consts = this.classifyConsts(file);
+            this.classifying.add(file);
+            try {
+                consts = this.classifyConsts(file);
+            } finally {
+                this.classifying.delete(file);
+            }
             this.writtenConsts.set(file, consts);
         }
         return consts.get(declaration) ?? true;
@@ -919,17 +940,23 @@ class Analysis {
         const known = this.getterResults.get(getter);
         if (known !== undefined) return known;
         if (getter.body === undefined || this.stack.has(getter)) return "fixed";
-        const outer = {template: this.template, current: this.current};
+        // A getter reached through an outer const's initializer is still checked aloud: its reads are its own.
+        const outer = {template: this.template, current: this.current, muted: this.muted};
         this.template = false;
+        this.muted = 0;
         this.stack.add(getter);
         this.current = new Set();
         this.getterReads.set(getter, this.current);
         const returns: Source[] = [];
-        this.checkStatements(getter.body.statements, {locals: new Map(), thisSource: "fixed"}, returns);
+        try {
+            this.checkStatements(getter.body.statements, {locals: new Map(), thisSource: "fixed"}, returns);
+        } finally {
+            this.stack.delete(getter);
+            this.template = outer.template;
+            this.current = outer.current;
+            this.muted = outer.muted;
+        }
         const result = returns.length === 0 ? "leaf" : returns.reduce(mergeSources);
-        this.stack.delete(getter);
-        this.template = outer.template;
-        this.current = outer.current;
         this.getterResults.set(getter, result);
         return result;
     }
