@@ -229,11 +229,14 @@ class Analysis {
             else if (keyType.getFlags() & ts.TypeFlags.NumberLike) return "passes";
             else return "mutates";
         }
-        const resultIsLeaf = this.isLeafType(this.checker.getTypeAtLocation(call));
-        if (this.isLeafType(baseType)) return resultIsLeaf ? "ends" : "passes";
+        // A primitive holds nothing of the field's, so its methods end the walk whatever they return.
+        if (this.isLeafType(baseType)) return "ends";
         const declaration = this.findDeclaration(this.checker.getPropertyOfType(baseType.getNonNullableType(), name));
         if (declaration === undefined || !declaration.getSourceFile().isDeclarationFile || this.nameContainer(baseType) === undefined) return "mutates";
-        return MUTATORS.has(name) ? "mutates" : resultIsLeaf ? "ends" : "passes";
+        if (MUTATORS.has(name)) return "mutates";
+        // The result is judged for the whole call, a union over the branches of a conditional callee; `any` may be anything.
+        const result = this.checker.getTypeAtLocation(call);
+        return result.getFlags() & (ts.TypeFlags.Any | ts.TypeFlags.Unknown) ? "passes" : this.isLeafType(result) ? "ends" : "passes";
     }
 
     /** Whether `node` is assigned, counted, deleted or mutated through a method, itself or through a path into it. */
@@ -893,12 +896,7 @@ function buildVirtualFile(tacet: string, source: string): VirtualFile {
     let propsType = "any";
     if (script !== null) {
         parts.push(script.content);
-        let promoted: string | undefined;
-        try {
-            promoted = descriptor.scriptSetup === null ? promoteScriptToSetup(source, script.loc.start.offset) : undefined;
-        } catch (error) {
-            throw new Error(`${tacet}: ${error instanceof Error ? error.message : String(error)}`);
-        }
+        const promoted = descriptor.scriptSetup === null ? promoteScriptToSetup(source, script.loc.start.offset, tacet) : undefined;
         try {
             const setup = promoted === undefined ? descriptor : parseSfc(promoted, {filename: tacet}).descriptor;
             const compiled = compileScript(setup, {id: tacet});
