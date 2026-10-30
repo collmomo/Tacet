@@ -137,6 +137,32 @@ callable.x.add(3);
 const bindable = {x: (): number => 1, y: 2};
 export const rebound = bindable.x.bind(null);
 
+const boundPush = {x: [1]};
+const pushLater = boundPush.x.push.bind(boundPush.x);
+pushLater(2);
+
+interface Helper { x: number; format: (n: number) => string; }
+const helper: Helper = {x: 1, format: (n: number): string => String(n)};
+export const helped = helper.format(2);
+
+const shorthandFormat = (n: number): string => String(n);
+const holder = {x: 1, shorthandFormat};
+export const holderText = holder.shorthandFormat(2);
+
+const parenthesised = {x: 1, f: ((n: number): string => String(n))};
+export const parenText = parenthesised.f(2);
+
+const stringified = {x: [1]};
+export const stringifiedText = stringified.toString();
+
+type Tagged = string & {__tag: {id: never}};
+const tagged = {x: "a" as Tagged};
+export const taggedLength = tagged.x.trim().length;
+
+type Loop = string & {__brand: Loop};
+const looping = {x: "a" as Loop};
+export const loopingLength = looping.x.trim().length;
+
 const casted = {x: [1]};
 (casted.x.push as (n: number) => number)(2);
 
@@ -190,6 +216,13 @@ export class ConstsView {
     @live public get sackX(): number { return sack.x.length; }
     @live public get callableX(): number { return callable.x.items.length; }
     @live public get bindableY(): number { return bindable.y; }
+    @live public get boundPushX(): number { return boundPush.x.length; }
+    @live public get helperX(): number { return helper.x; }
+    @live public get holderX(): number { return holder.x; }
+    @live public get parenthesisedX(): number { return parenthesised.x; }
+    @live public get stringifiedX(): number { return stringified.x.length; }
+    @live public get taggedX(): number { return tagged.x.length; }
+    @live public get loopingX(): number { return looping.x.length; }
     @live public get branchedX(): number { return branched.x.length; }
     @live public get indexedX(): number { return indexed.x.length; }
     @live public get elementX(): number { return element.x.length; }

@@ -127,6 +127,12 @@ function climbValue(node: ts.Node): ts.Node {
 
 const PRIMITIVE_FLAGS = ts.TypeFlags.StringLike | ts.TypeFlags.NumberLike | ts.TypeFlags.BooleanLike | ts.TypeFlags.BigIntLike | ts.TypeFlags.ESSymbolLike | ts.TypeFlags.EnumLike | ts.TypeFlags.Void | ts.TypeFlags.Undefined | ts.TypeFlags.Null | ts.TypeFlags.Never;
 
+function unwrapParenthesesOf(node: ts.Node): ts.Node {
+    let inner = node;
+    while (ts.isParenthesizedExpression(inner)) inner = inner.expression;
+    return inner;
+}
+
 /** A call on the path: it writes, its result cannot be the field's data, or its result may be and the walk goes on. */
 type CallEffect = "mutates" | "ends" | "passes";
 
@@ -214,22 +220,34 @@ class Analysis {
     private isPrimitiveType(type: ts.Type): boolean {
         if (type.getFlags() & PRIMITIVE_FLAGS) return true;
         if (type.isUnion()) return type.types.every(part => this.isPrimitiveType(part));
-        // A brand is an object part whose every property is itself primitive, a phantom; an object part with real data is not.
-        return type.isIntersection() && type.types.some(part => this.isPrimitiveType(part))
-            && type.types.every(part => this.isPrimitiveType(part) || part.getProperties().every(property => this.isPrimitiveType(this.checker.getTypeOfSymbol(property))));
+        // A brand is a primitive crossed with phantom parts, objects that hold no data down to their leaves.
+        return type.isIntersection() && type.types.some(part => part.getFlags() & PRIMITIVE_FLAGS) && this.holdsNoData(type, new Set());
     }
 
-    /** What one declaration of a callee may do to what holds it. */
-    private readDeclarationEffect(declaration: ts.Declaration, receiver: ts.Node, baseType: ts.Type, name: string): CallEffect {
-        if (!declaration.getSourceFile().isDeclarationFile) {
-            // A method may change what it belongs to through `this`; an arrow held in a property has no `this` of its own.
-            if (ts.isPropertyAssignment(declaration) && ts.isArrowFunction(declaration.initializer)) return "passes";
-            return "mutates";
-        }
+    /** Whether a type carries no data at all: primitives, and objects whose every property carries none; a cycle carries none. */
+    private holdsNoData(type: ts.Type, seen: Set<ts.Type>): boolean {
+        if (type.getFlags() & PRIMITIVE_FLAGS) return true;
+        if (type.getFlags() & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) return false;
+        if (seen.has(type)) return true;
+        seen.add(type);
+        if (type.isUnion() || type.isIntersection()) return type.types.every(part => this.holdsNoData(part, seen));
+        return type.getCallSignatures().length === 0 && this.nameContainer(type) === undefined && type.getProperties().every(property => this.holdsNoData(this.checker.getTypeOfSymbol(property), seen));
+    }
+
+    /** What a project declaration of a callee may do to what holds it: a method can reach it through `this`, a held arrow cannot. */
+    private readProjectCalleeEffect(declaration: ts.Declaration): CallEffect {
+        if (ts.isMethodDeclaration(declaration) || ts.isMethodSignature(declaration) || isClassMember(declaration)) return "mutates";
+        if (ts.isPropertyAssignment(declaration) && ts.isFunctionExpression(unwrapParenthesesOf(declaration.initializer))) return "mutates";
+        return "passes";
+    }
+
+    /** What a library declaration of a callee may do: a container's mutator writes, Object's and Function's members never, any other library object's may. */
+    private readLibraryCalleeEffect(declarations: ts.Declaration[], receiver: ts.Node, baseType: ts.Type, name: string): CallEffect {
         if (baseType.getCallSignatures().length > 0) {
-            // `f.call(...)` and `f.apply(...)` run the receiver: what it would do, called itself; `bind` and the rest run nothing.
-            return name === "call" || name === "apply" ? this.readCalleeEffect(receiver) : "passes";
+            // `f.call(...)`, `f.apply(...)` run the receiver; `f.bind(...)` hands it on to be run; what it would do, called itself.
+            return name === "call" || name === "apply" || name === "bind" ? this.readCalleeEffect(receiver) : "passes";
         }
+        if (declarations.every(declaration => ts.isInterfaceDeclaration(declaration.parent) && (declaration.parent.name.text === "Object" || declaration.parent.name.text === "Function"))) return "passes";
         if (this.nameContainer(baseType) === undefined) return "mutates";
         return MUTATORS.has(name) ? "mutates" : "passes";
     }
@@ -258,8 +276,11 @@ class Analysis {
         }
         const declarations = this.checker.getPropertyOfType(baseType.getNonNullableType(), name)?.declarations ?? [];
         if (declarations.length === 0) return "mutates";
-        // A union's property has one declaration per part; the worst decides.
-        return worstEffect(...declarations.map(declaration => this.readDeclarationEffect(declaration, callee.expression, baseType, name)));
+        // A union's property has one declaration per part; the worst decides, the library's judged once.
+        const library = declarations.filter(declaration => declaration.getSourceFile().isDeclarationFile);
+        const effects = declarations.filter(declaration => !declaration.getSourceFile().isDeclarationFile).map(declaration => this.readProjectCalleeEffect(declaration));
+        if (library.length > 0) effects.push(this.readLibraryCalleeEffect(library, callee.expression, baseType, name));
+        return worstEffect(...effects);
     }
 
     /** What a call on the path does: its callee's effect, and when that hands the result on, whether the result can hold the field's data. */
