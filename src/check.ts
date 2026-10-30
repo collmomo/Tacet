@@ -1,11 +1,9 @@
 // The build check: every read of a `@live` getter or a `.tacet` template is followed hop by hop through the types, and a read the screen could not follow is an error naming it.
 import ts from "typescript";
 import path from "node:path";
-import {compileScript, parse as parseSfc} from "vue/compiler-sfc";
+import {compileScript, errorMessages, parse as parseSfc} from "vue/compiler-sfc";
 import type {DirectiveNode, ElementNode, ExpressionNode, RootNode, TemplateChildNode} from "@vue/compiler-core";
 import {promoteScriptToSetup, readMark} from "./marks.js";
-
-export {readMark};
 
 export interface Diagnostic {
     file: string;
@@ -95,6 +93,18 @@ function isUnderConstAssertion(declaration: ts.Node): boolean {
     return ts.isAsExpression(node.parent) && ts.isConstTypeReference(node.parent.type);
 }
 
+/** Whether `node` sits in a slot of an array or object literal, where a destructuring assignment would write it. */
+function isLiteralSlot(parent: ts.Node, node: ts.Node): boolean {
+    return ts.isArrayLiteralExpression(parent) || ts.isObjectLiteralExpression(parent) || ts.isSpreadElement(parent) || ts.isSpreadAssignment(parent) || (ts.isPropertyAssignment(parent) && parent.initializer === node);
+}
+
+/** Whether the literal around `slot` is, itself or inside another literal, the left side of a destructuring assignment. */
+function isDestructuringTarget(slot: ts.Node): boolean {
+    let literal = slot;
+    while (isLiteralSlot(literal.parent, literal)) literal = literal.parent;
+    return ts.isBinaryExpression(literal.parent) && literal.parent.left === literal && literal.parent.operatorToken.kind === ts.SyntaxKind.EqualsToken;
+}
+
 /** Whether `node` is assigned, counted, deleted or mutated through a method, itself or through a path into it. */
 function isWriteTarget(node: ts.Node): boolean {
     let target = node;
@@ -105,10 +115,19 @@ function isWriteTarget(node: ts.Node): boolean {
         } else if (!((ts.isPropertyAccessExpression(parent) || ts.isElementAccessExpression(parent)) && parent.expression === target) && !ts.isNonNullExpression(parent) && !ts.isParenthesizedExpression(parent)) {
             if (ts.isBinaryExpression(parent)) return parent.left === target && isAssignmentOperator(parent.operatorToken.kind);
             if (ts.isPrefixUnaryExpression(parent) || ts.isPostfixUnaryExpression(parent)) return isCountOperator(parent.operator);
+            if (ts.isForOfStatement(parent) || ts.isForInStatement(parent)) return parent.initializer === target;
+            if (isLiteralSlot(parent, target)) return isDestructuringTarget(parent);
             return ts.isDeleteExpression(parent);
         }
         target = parent;
     }
+}
+
+/** Whether `node` is the name a `typeof a.b` type query starts with: a read of its type, never of its value. */
+function isTypeQueryName(node: ts.Node): boolean {
+    let name = node;
+    while (ts.isQualifiedName(name.parent)) name = name.parent;
+    return ts.isTypeQueryNode(name.parent);
 }
 
 function isValuePassingOperator(kind: ts.SyntaxKind): boolean {
@@ -132,11 +151,13 @@ function isPlainRead(reference: ts.Node): boolean {
     if (ts.isNewExpression(parent)) return parent.expression === node;
     if (ts.isTaggedTemplateExpression(parent)) return parent.tag === node;
     if (ts.isTemplateSpan(parent)) return !ts.isTaggedTemplateExpression(parent.parent.parent);
-    if (ts.isVoidExpression(parent) || ts.isTypeOfExpression(parent) || ts.isExpressionStatement(parent) || ts.isTypeQueryNode(parent)) return true;
+    if (ts.isVoidExpression(parent) || ts.isTypeOfExpression(parent) || ts.isExpressionStatement(parent)) return true;
+    if (ts.isTypeQueryNode(parent) || ts.isQualifiedName(parent)) return isTypeQueryName(node);
     if (ts.isPrefixUnaryExpression(parent) || ts.isPostfixUnaryExpression(parent)) return !isCountOperator(parent.operator);
     if (ts.isBinaryExpression(parent)) return !isAssignmentOperator(parent.operatorToken.kind);
     if (ts.isConditionalExpression(parent) || ts.isIfStatement(parent) || ts.isWhileStatement(parent) || ts.isDoStatement(parent) || ts.isSwitchStatement(parent) || ts.isCaseClause(parent)) return true;
     if (ts.isForStatement(parent)) return parent.initializer !== node;
+    if (ts.isForOfStatement(parent) || ts.isForInStatement(parent)) return parent.expression === node;
     return false;
 }
 
@@ -160,7 +181,8 @@ class Analysis {
     private readonly locate: Locate;
     private readonly stack = new Set<ts.Node>();
     private readonly getterResults = new Map<ts.GetAccessorDeclaration, Source>();
-    private readonly writtenConsts = new Map<ts.VariableDeclaration, boolean>();
+    /** Every module-level const of a file, classified in one walk of the file: written, or never. */
+    private readonly writtenConsts = new Map<ts.SourceFile, Map<ts.VariableDeclaration, boolean>>();
     private current: Set<ts.Declaration> | undefined;
     private template = false;
 
@@ -377,19 +399,35 @@ class Analysis {
         return source === "fresh" ? "fixed" : source;
     }
 
-    /** A module-level const anyone may write is not a value: one exported, or referenced in its file other than as a plain read; the file is scanned once. */
+    /** A module-level const anyone may write is not a value: one exported, or referenced in its file other than as a plain read. */
     private isWrittenConst(declaration: ts.VariableDeclaration): boolean {
-        const known = this.writtenConsts.get(declaration);
-        if (known !== undefined) return known;
-        let written = hasModifier(declaration.parent.parent, ts.SyntaxKind.ExportKeyword);
+        const file = declaration.getSourceFile();
+        let consts = this.writtenConsts.get(file);
+        if (consts === undefined) {
+            consts = this.classifyConsts(file);
+            this.writtenConsts.set(file, consts);
+        }
+        return consts.get(declaration) ?? true;
+    }
+
+    /** One walk of the file settles every module-level const of it at once. */
+    private classifyConsts(file: ts.SourceFile): Map<ts.VariableDeclaration, boolean> {
+        const written = new Map<ts.VariableDeclaration, boolean>();
+        for (const statement of file.statements) {
+            if (!ts.isVariableStatement(statement) || (statement.declarationList.flags & ts.NodeFlags.Const) === 0) continue;
+            const exported = hasModifier(statement, ts.SyntaxKind.ExportKeyword);
+            for (const declaration of statement.declarationList.declarations) written.set(declaration, exported);
+        }
         const visitNode = (node: ts.Node): void => {
-            if (written) return;
-            if (ts.isExportSpecifier(node)) written = this.checker.getExportSpecifierLocalTargetSymbol(node)?.valueDeclaration === declaration;
-            else if (ts.isIdentifier(node) && node !== declaration.name && this.findReferencedDeclaration(node) === declaration) written = !isPlainRead(node);
-            else ts.forEachChild(node, visitNode);
+            if (ts.isExportSpecifier(node)) {
+                const target = this.checker.getExportSpecifierLocalTargetSymbol(node)?.valueDeclaration;
+                if (target !== undefined && ts.isVariableDeclaration(target) && written.has(target)) written.set(target, true);
+            } else if (ts.isIdentifier(node)) {
+                const target = this.findReferencedDeclaration(node);
+                if (target !== undefined && ts.isVariableDeclaration(target) && written.has(target) && target.name !== node && !isPlainRead(node)) written.set(target, true);
+            } else ts.forEachChild(node, visitNode);
         };
-        visitNode(declaration.getSourceFile());
-        this.writtenConsts.set(declaration, written);
+        visitNode(file);
         return written;
     }
 
@@ -757,8 +795,8 @@ declare function __event(handler: ($event: any) => unknown): void;
 declare function __ref(field: unknown): void;
 declare const $event: any, $attrs: any, $slots: any, $refs: any, $el: any, $props: any, $emit: any, $nextTick: any;
 `;
-/** Vue's wording for a directive its transform refuses; its parser lets these through with no expression. */
-const DIRECTIVE_ERRORS = {missingCondition: "v-if/v-else-if is missing expression.", missingItems: "v-for is missing expression.", brokenItems: "v-for has invalid expression."};
+/** Vue's wording for a directive its transform refuses, by its ErrorCodes X_V_IF_NO_EXPRESSION, X_V_FOR_NO_EXPRESSION and X_V_FOR_MALFORMED_EXPRESSION: compiler-sfc exports the messages at run time, not the enum. */
+const DIRECTIVE_ERRORS = {missingCondition: errorMessages[28], missingItems: errorMessages[31], brokenItems: errorMessages[32]};
 /** A static `ref` whose value is a path into an object, the form `src/files.ts` rewrites into an assignment. */
 const REF_PATH = /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+$/;
 
@@ -812,6 +850,11 @@ function buildVirtualFile(tacet: string, source: string): VirtualFile {
     const emitExpression = (expression: ExpressionNode, prefix: string, suffix: string): void => {
         if (expression.type === 4 /* SIMPLE_EXPRESSION */) emitRead(expression.content, expression.loc.start.offset, prefix, suffix);
     };
+    /** A condition the directive lacks is `false as boolean`, not `false`: a literal would make the rest of the chain unreachable to TypeScript. */
+    const emitCondition = (expression: ExpressionNode | undefined, prefix: string, suffix: string): void => {
+        if (expression?.type === 4 /* SIMPLE_EXPRESSION */) emitExpression(expression, prefix, suffix);
+        else emitText(`${prefix}false as boolean${suffix}`);
+    };
 
     const emitChildren = (children: TemplateChildNode[]): void => {
         for (let index = 0; index < children.length; index++) {
@@ -832,7 +875,7 @@ function buildVirtualFile(tacet: string, source: string): VirtualFile {
             if (directive.name === "for" && directive.forParseResult === undefined) reportDirective(directive, directive.exp === undefined ? DIRECTIVE_ERRORS.missingItems : DIRECTIVE_ERRORS.brokenItems);
         }
         const vFor = directives.find(d => d.name === "for");
-        const vIf = directives.find(d => d.name === "if" && d.exp !== undefined);
+        const vIf = directives.find(d => d.name === "if");
         let closers = "";
         if (vFor?.forParseResult !== undefined) {
             const {source: items, value, key, index: position} = vFor.forParseResult;
@@ -842,8 +885,8 @@ function buildVirtualFile(tacet: string, source: string): VirtualFile {
             emitExpression(items, "", ")) {\n");
             closers += "}\n";
         }
-        if (vIf?.exp !== undefined) {
-            emitExpression(vIf.exp, "if (", ") {\n");
+        if (vIf !== undefined) {
+            emitCondition(vIf.exp, "if (", ") {\n");
             closers += "}\n";
         }
         for (const prop of node.props) {
@@ -884,7 +927,7 @@ function buildVirtualFile(tacet: string, source: string): VirtualFile {
                 const chain = sibling.props.find((p): p is DirectiveNode => p.type === 7 && (p.name === "else-if" || p.name === "else"));
                 if (chain === undefined) break;
                 closers = closers.slice(0, -2);
-                if (chain.name === "else-if" && chain.exp?.type === 4) emitExpression(chain.exp, "} else if (", ") {\n");
+                if (chain.name === "else-if") emitCondition(chain.exp, "} else if (", ") {\n");
                 else emitText("} else {\n");
                 closers += "}\n";
                 emitElement(sibling, [], 0);

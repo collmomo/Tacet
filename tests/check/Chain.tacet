@@ -1,0 +1,10 @@
+<template>
+  <p v-if>a</p>
+  <p v-else-if="view.plain > 0">b</p>
+  <p v-else>{{ view.plain }}</p>
+</template>
+
+<script setup lang="ts">
+  import {BadView} from "./Bad";
+  const view = new BadView(() => 1);
+</script>

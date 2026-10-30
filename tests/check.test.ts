@@ -2,6 +2,8 @@ import {describe, expect, it} from "vitest";
 import {readFileSync} from "node:fs";
 import path from "node:path";
 import ts from "typescript";
+import {errorMessages} from "vue/compiler-sfc";
+import {ErrorCodes} from "@vue/compiler-core";
 import {Checker, checkSources, type Diagnostic} from "../src/check";
 
 const here = path.resolve(__dirname, "check");
@@ -89,6 +91,11 @@ describe("the getter check", () => {
         expect(exported.map(d => [d.file, d.line, d.message])).toEqual([[findFixture("Shared.ts"), 6, written]]);
         expect(checkFixture("Alias.ts").map(d => [d.line, d.message])).toEqual([[8, written]]);
     });
+
+    it("keeps a const a value through a for...of, a for...in and a typeof type, and loses it to a destructuring or a for...of target", () => {
+        const written = (name: string): string => `"${name}.x": "x" is a plain property that can change by mutation, and the object is not followed. Hold the object in a @deep field, or declare "x" readonly.`;
+        expect(checkFixture("Consts.ts").map(d => [d.line, d.message])).toEqual([[23, written("spread")], [24, written("target")]]);
+    });
 });
 
 describe("the template check", () => {
@@ -122,10 +129,20 @@ describe("the template check", () => {
     it("names a directive with no expression in Vue's words, and goes on", () => {
         const diagnostics = checkSources([], readTacet("Missing.tacet"), options);
         expect(diagnostics.map(d => [d.file, d.line, d.column, d.level, d.message])).toEqual([
-            [findFixture("Missing.tacet"), 2, 6, "error", "v-if/v-else-if is missing expression."],
-            [findFixture("Missing.tacet"), 4, 6, "error", "v-if/v-else-if is missing expression."],
-            [findFixture("Missing.tacet"), 5, 6, "error", "v-for is missing expression."],
-            [findFixture("Missing.tacet"), 6, 6, "error", "v-for has invalid expression."],
+            [findFixture("Missing.tacet"), 2, 6, "error", errorMessages[ErrorCodes.X_V_IF_NO_EXPRESSION]],
+            [findFixture("Missing.tacet"), 4, 6, "error", errorMessages[ErrorCodes.X_V_IF_NO_EXPRESSION]],
+            [findFixture("Missing.tacet"), 5, 6, "error", errorMessages[ErrorCodes.X_V_FOR_NO_EXPRESSION]],
+            [findFixture("Missing.tacet"), 6, 6, "error", errorMessages[ErrorCodes.X_V_FOR_MALFORMED_EXPRESSION]],
+        ]);
+    });
+
+    it("keeps the chain after a v-if with no expression: every v-else-if condition and every branch is still checked", () => {
+        const diagnostics = checkSources([findFixture("Bad.ts")], readTacet("Chain.tacet"), options);
+        const plain = `"view.plain": "plain" is a plain field of BadView that can change, and the screen would not follow it. Mark it @live or @deep, or make it readonly.`;
+        expect(diagnostics.filter(d => d.file === findFixture("Chain.tacet")).map(d => [d.line, d.column, d.message])).toEqual([
+            [2, 6, errorMessages[ErrorCodes.X_V_IF_NO_EXPRESSION]],
+            [3, 17, plain],
+            [4, 16, plain],
         ]);
     });
 });
