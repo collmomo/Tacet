@@ -63,8 +63,26 @@ const wrapped = {x: [1]};
 (wrapped.x.push)(2);
 
 const copied = {x: [1]};
-const copy = copied.x.slice();
-export const copyLength = copy.length;
+copied.x.slice().push(2);
+copied.x.map(n => n)[0] = 1;
+copied.x.slice().sort();
+copied.x.filter(n => n > 0).reverse().length = 0;
+
+const element = {x: [{y: 1}]};
+element.x.filter(() => true)[0].y = 2;
+
+const casted = {x: [1]};
+(casted.x.push as (n: number) => number)(2);
+
+const asserted2 = {x: [1]};
+(asserted2.x.push!)(2);
+
+const keyed2 = {x: [1]};
+keyed2.x["push"](2);
+
+const named = {x: [1]};
+const method = "push";
+named.x[method](2);
 
 export class ConstsView {
     @live public get loopedN(): number { return looped[0].n; }
@@ -87,4 +105,10 @@ export class ConstsView {
     @live public get oredX(): number { return ored.x.y; }
     @live public get chosenX(): number { return chosen.x.y; }
     @live public get wrappedX(): number { return wrapped.x.length; }
+    @live public get copiedX(): number { return copied.x.length; }
+    @live public get elementX(): number { return element.x.length; }
+    @live public get castedX(): number { return casted.x.length; }
+    @live public get asserted2X(): number { return asserted2.x.length; }
+    @live public get keyed2X(): number { return keyed2.x.length; }
+    @live public get namedX(): number { return named.x.length; }
 }

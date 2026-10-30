@@ -91,9 +91,9 @@ describe("the getter check", () => {
         expect(checkFixture("Alias.ts").map(d => [d.line, d.message])).toEqual([[8, written]]);
     });
 
-    it("keeps a const a value through a for...of, a for...in, a typeof type and a copy into a literal, and loses it to a destructuring, a loop target and every write through parentheses, a cast, a comma, a fallback, a branch or a call's result", () => {
+    it("keeps a const a value through a for...of, a for...in, a typeof type and a copy into a literal, and loses it to a destructuring, a loop target and every write through parentheses, a cast, a comma, a fallback, a branch, a mutator under any wrapper or a call's own result, while a fresh copy's own slot is not", () => {
         const written = (name: string): string => `"${name}.x": "x" is a plain property that can change by mutation, and the object is not followed. Hold the object in a @deep field, or declare "x" readonly.`;
-        expect(checkFixture("Consts.ts").map(d => [d.line, d.message])).toEqual([[73, written("spread")], [74, written("target")], [75, written("pattern")], [76, written("paren")], [78, written("counted")], [79, written("added")], [80, written("deleted")], [81, written("pushed")], [82, written("pathed")], [83, written("asserted")], [84, written("satisfied")], [85, written("sequenced")], [86, written("found")], [87, written("ored")], [88, written("chosen")], [89, written("wrapped")]]);
+        expect(checkFixture("Consts.ts").map(d => [d.line, d.message])).toEqual([[91, written("spread")], [92, written("target")], [93, written("pattern")], [94, written("paren")], [96, written("counted")], [97, written("added")], [98, written("deleted")], [99, written("pushed")], [100, written("pathed")], [101, written("asserted")], [102, written("satisfied")], [103, written("sequenced")], [104, written("found")], [105, written("ored")], [106, written("chosen")], [107, written("wrapped")], [109, written("element")], [110, written("casted")], [111, written("asserted2")], [112, written("keyed2")], [113, written("named")]]);
     });
 });
 
