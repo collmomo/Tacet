@@ -2,7 +2,7 @@ import ts from "typescript";
 
 export type MarkName = "live" | "deep";
 
-function readMarkName(name: string): MarkName | undefined {
+export function readMarkName(name: string): MarkName | undefined {
     return name === "live" || name === "deep" ? name : undefined;
 }
 
@@ -34,6 +34,8 @@ export function findScriptOpening(source: string, contentOffset: number): number
 }
 
 export function promoteScriptToSetup(source: string, contentOffset: number): string {
-    const after = findScriptOpening(source, contentOffset) + "<script".length;
+    const opening = findScriptOpening(source, contentOffset);
+    if (opening < 0) return source;
+    const after = opening + "<script".length;
     return source.slice(0, after) + " setup" + source.slice(after);
 }

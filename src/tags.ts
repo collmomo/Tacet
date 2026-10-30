@@ -1,7 +1,7 @@
 import ts from "typescript";
 import MagicString, {type SourceMap} from "magic-string";
 import type {Plugin} from "vite";
-import {readDecoratorMark} from "./marks.js";
+import {readDecoratorMark, readMarkName} from "./marks.js";
 
 export interface TagsOptions {
     /** The module the inserted calls import from. Default: "tacet/runtime". */
@@ -15,7 +15,6 @@ export interface TagsResult {
     errors: string[];
 }
 
-const MARKS = new Set(["live", "deep"]);
 const QUICK = /@(?:live|deep)\b|\/\*\*\s*@[a-z]+\s*\*\/|\bas\s+live\b/;
 
 function readScriptKind(id: string): ts.ScriptKind {
@@ -75,7 +74,8 @@ export function rewriteTags(code: string, id: string, options: TagsOptions = {})
             let mark: string | undefined;
             for (const tag of ts.getJSDocTags(member)) {
                 const name = tag.tagName.text;
-                if (MARKS.has(name)) mark = name;
+                const known = readMarkName(name);
+                if (known !== undefined) mark = known;
                 else if (name.length >= 3 && Math.min(measureEditDistance(name, "live"), measureEditDistance(name, "deep")) <= 2) {
                     warnings.push(`${formatPosition(member)}: "@${name}" is not a Tacet mark. Did you mean @live or @deep? The field stays plain.`);
                 }
