@@ -125,6 +125,8 @@ function climbValue(node: ts.Node): ts.Node {
     return current;
 }
 
+const PRIMITIVE_FLAGS = ts.TypeFlags.StringLike | ts.TypeFlags.NumberLike | ts.TypeFlags.BooleanLike | ts.TypeFlags.BigIntLike | ts.TypeFlags.ESSymbolLike | ts.TypeFlags.EnumLike | ts.TypeFlags.Void | ts.TypeFlags.Undefined | ts.TypeFlags.Null | ts.TypeFlags.Never;
+
 /** A call on the path: it writes, its result cannot be the field's data, or its result may be and the walk goes on. */
 type CallEffect = "mutates" | "ends" | "passes";
 
@@ -200,19 +202,19 @@ class Analysis {
         return (property.declarations ?? []).some(declaration => hasModifier(declaration, ts.SyntaxKind.ReadonlyKeyword) || isUnderConstAssertion(declaration));
     }
 
+    /** A type the check does not look into: a primitive, `any`, `unknown`, a bare function. */
     private isLeafType(type: ts.Type): boolean {
-        const flags = type.getFlags();
-        if (flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown | ts.TypeFlags.Never | ts.TypeFlags.Void | ts.TypeFlags.Undefined | ts.TypeFlags.Null)) return true;
-        if (flags & (ts.TypeFlags.StringLike | ts.TypeFlags.NumberLike | ts.TypeFlags.BooleanLike | ts.TypeFlags.BigIntLike | ts.TypeFlags.ESSymbolLike | ts.TypeFlags.EnumLike)) return true;
+        if (type.getFlags() & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) return true;
+        if (this.isPrimitiveType(type)) return true;
         if (type.isUnion()) return type.types.every(part => this.isLeafType(part));
         return type.getCallSignatures().length > 0 && type.getProperties().length === 0;
     }
 
-    /** A type that holds nothing of anyone's: a primitive, void, null, undefined, never. `any` and `unknown` are not. */
+    /** A type that holds nothing of anyone's: a primitive, a branded one, void, null, undefined, never. `any` and `unknown` are not. */
     private isPrimitiveType(type: ts.Type): boolean {
-        const flags = type.getFlags();
-        if (flags & (ts.TypeFlags.StringLike | ts.TypeFlags.NumberLike | ts.TypeFlags.BooleanLike | ts.TypeFlags.BigIntLike | ts.TypeFlags.ESSymbolLike | ts.TypeFlags.EnumLike | ts.TypeFlags.Void | ts.TypeFlags.Undefined | ts.TypeFlags.Null | ts.TypeFlags.Never)) return true;
-        return type.isUnion() && type.types.every(part => this.isPrimitiveType(part));
+        if (type.getFlags() & PRIMITIVE_FLAGS) return true;
+        if (type.isUnion()) return type.types.every(part => this.isPrimitiveType(part));
+        return type.isIntersection() && type.types.some(part => this.isPrimitiveType(part));
     }
 
     /** What a callee does to the data it is reached through, by its declaration: on a branched callee, the worst branch. */
@@ -228,7 +230,9 @@ class Analysis {
         if (!ts.isPropertyAccessExpression(callee) && !ts.isElementAccessExpression(callee)) return "passes";
         const baseType = this.checker.getTypeAtLocation(callee.expression);
         if (this.isPrimitiveType(baseType)) return "ends";
-        if (baseType.getFlags() & (ts.TypeFlags.Any | ts.TypeFlags.Unknown) || baseType.getCallSignatures().length > 0) return "mutates";
+        if (baseType.getFlags() & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) return "mutates";
+        // `f.call(...)`, `f.apply(...)`, `f.bind(...)` run the receiver: what it would do, called itself.
+        if (baseType.getCallSignatures().length > 0) return this.readCalleeEffect(callee.expression);
         let name: string | undefined;
         if (ts.isPropertyAccessExpression(callee)) name = callee.name.text;
         else {
@@ -238,7 +242,12 @@ class Analysis {
             else return "mutates";
         }
         const declaration = this.findDeclaration(this.checker.getPropertyOfType(baseType.getNonNullableType(), name));
-        if (declaration === undefined || !declaration.getSourceFile().isDeclarationFile || this.nameContainer(baseType) === undefined) return "mutates";
+        if (declaration === undefined) return "mutates";
+        // A method of a class may change what the class holds; a function held in a plain property is only called.
+        if (!declaration.getSourceFile().isDeclarationFile) return isClassMember(declaration) ? "mutates" : "passes";
+        // The primitive parts of a union end the walk on their own; the rest must be a container the build knows.
+        const parts = baseType.isUnion() ? baseType.types.filter(part => !this.isPrimitiveType(part)) : [baseType];
+        if (parts.some(part => this.nameContainer(part) === undefined)) return "mutates";
         return MUTATORS.has(name) ? "mutates" : "passes";
     }
 

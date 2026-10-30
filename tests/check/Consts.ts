@@ -105,6 +105,25 @@ const keyedPrimitive = {x: "a,b"};
 const primitiveKey: "trim" | "toUpperCase" = Math.random() > 2 ? "trim" : "toUpperCase";
 keyedPrimitive.x[primitiveKey]();
 
+const helpers = {x: 1, format: (n: number): string => String(n)};
+export const formatted = helpers.format(2);
+
+type Id = string & {__brand: "id"};
+const branded = {x: "a" as Id};
+export const brandedLength = branded.x.trim().length;
+
+const mixed = {x: "" as string | string[]};
+export const mixedLength = mixed.x.slice(0).length;
+
+const bound = {x: (): number => 1, y: 2};
+export const bounded = bound.x.call(null);
+
+const slots = {x: [(): {y: number} => ({y: 1})], n: 1};
+slots.x[0]().y = 2;
+
+const slotsRead = {x: [(): {y: number} => ({y: 1})], n: 1};
+export const slotText = slotsRead.x[0]().y.toString();
+
 const casted = {x: [1]};
 (casted.x.push as (n: number) => number)(2);
 
@@ -148,6 +167,12 @@ export class ConstsView {
     @live public get joinedX(): number { return joined.x.length; }
     @live public get unknownsX(): number { return unknowns.x.size; }
     @live public get keyedPrimitiveX(): number { return keyedPrimitive.x.length; }
+    @live public get helpersX(): number { return helpers.x; }
+    @live public get brandedX(): number { return branded.x.length; }
+    @live public get mixedX(): number { return mixed.x.length; }
+    @live public get boundY(): number { return bound.y; }
+    @live public get slotsN(): number { return slots.n; }
+    @live public get slotsReadN(): number { return slotsRead.n; }
     @live public get branchedX(): number { return branched.x.length; }
     @live public get indexedX(): number { return indexed.x.length; }
     @live public get elementX(): number { return element.x.length; }
