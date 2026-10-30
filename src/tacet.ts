@@ -30,7 +30,8 @@ export function wrapDeep<T>(value: T): T {
 
 /** Vue's `v-for` walks `toRaw(source)`, past the deep proxy: the `.tacet` build hands it this, read through the proxy so each row comes wrapped and tracked. */
 export function readItems<T>(source: T): T {
-    return Array.isArray(source) && innerByOuter.has(source) ? (Array.from(source) as T) : source;
+    const inner = Array.isArray(source) ? innerByOuter.get(source) as unknown[] | undefined : undefined;
+    return inner === undefined ? source : (Array.from(inner.values(), wrapDeep) as T);
 }
 
 /** How many deep proxies were made so far; a probe for the tests. */

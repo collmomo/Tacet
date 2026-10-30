@@ -1,7 +1,7 @@
 import {describe, expect, it} from "vitest";
 import {isReactive, toRaw} from "vue";
 import {deep, live} from "../src";
-import {countWraps, wrapDeep} from "../src/runtime";
+import {countWraps, readItems, wrapDeep} from "../src/runtime";
 import {follow} from "./helpers";
 
 class Sheet {
@@ -184,5 +184,25 @@ describe("@deep", () => {
         expect(watcher.runs).toBe(3);
         expect(watcher.last).toBe("first");
         expect(countWraps() - wraps).toBe(1);
+    });
+});
+
+describe("readItems, what a v-for walks", () => {
+    it("hands wrapped rows and re-runs on a push, a replacement at an index and a row's mutation", () => {
+        class Table {
+            @deep public rows: {n: number}[] = [{n: 1}, {n: 2}];
+        }
+        const table = new Table();
+        const watcher = follow(() => readItems(table.rows).map(row => row.n).join(","));
+        expect(watcher.last).toBe("1,2");
+        expect(isReactive(readItems(table.rows)[0])).toBe(true);
+        table.rows.push({n: 3});
+        expect(watcher.last).toBe("1,2,3");
+        table.rows[0] = {n: 9};
+        expect(watcher.last).toBe("9,2,3");
+        table.rows[1].n = 7;
+        expect(watcher.last).toBe("9,7,3");
+        expect(readItems([1, 2])).toEqual([1, 2]);
+        expect(readItems("x")).toBe("x");
     });
 });
