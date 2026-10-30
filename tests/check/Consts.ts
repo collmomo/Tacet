@@ -19,6 +19,13 @@ for (target.x of [3]) {}
 const pattern = {x: 1};
 for ([pattern.x] of [[4]]) {}
 
+const paren = {x: 1};
+[(paren.x)] = [5];
+
+const held = {x: 1};
+const copies = [[held.x]];
+export const copyCount = copies.length;
+
 export class ConstsView {
     @live public get loopedN(): number { return looped[0].n; }
     @live public get keyedN(): number { return keyed[0].n; }
@@ -26,4 +33,6 @@ export class ConstsView {
     @live public get spreadX(): number { return spread.x; }
     @live public get targetX(): number { return target.x; }
     @live public get patternX(): number { return pattern.x; }
+    @live public get parenX(): number { return paren.x; }
+    @live public get heldX(): number { return held.x; }
 }

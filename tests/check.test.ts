@@ -2,8 +2,7 @@ import {describe, expect, it} from "vitest";
 import {readFileSync} from "node:fs";
 import path from "node:path";
 import ts from "typescript";
-import {errorMessages} from "vue/compiler-sfc";
-import {ErrorCodes} from "@vue/compiler-core";
+import {ErrorCodes, errorMessages} from "@vue/compiler-core";
 import {Checker, checkSources, type Diagnostic} from "../src/check";
 
 const here = path.resolve(__dirname, "check");
@@ -94,7 +93,7 @@ describe("the getter check", () => {
 
     it("keeps a const a value through a for...of, a for...in and a typeof type, and loses it to a destructuring or a for...of target", () => {
         const written = (name: string): string => `"${name}.x": "x" is a plain property that can change by mutation, and the object is not followed. Hold the object in a @deep field, or declare "x" readonly.`;
-        expect(checkFixture("Consts.ts").map(d => [d.line, d.message])).toEqual([[26, written("spread")], [27, written("target")], [28, written("pattern")]]);
+        expect(checkFixture("Consts.ts").map(d => [d.line, d.message])).toEqual([[33, written("spread")], [34, written("target")], [35, written("pattern")], [36, written("paren")]]);
     });
 });
 
