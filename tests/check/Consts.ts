@@ -188,6 +188,31 @@ interface VoidThis { x: number; format: (this: void, n: number) => string; }
 const voidThis: VoidThis = {x: 1, format: (n: number): string => String(n)};
 export const voidText = voidThis.format(2);
 
+class ArrowField { public x = 1; public bump = (): void => { this.x++; }; }
+const fielded = {x: 1, b: new ArrowField()};
+fielded.b.bump();
+
+const augmentedArray = {x: [1]};
+augmentedArray.x.fillAll();
+
+const spreadImpl = {f(): void { this.x++; }, x: 0};
+const spreadOver = {x: 1, f: (): void => {}, ...spreadImpl};
+spreadOver.f();
+
+type VoidFn = (this: void, n: number) => string;
+interface AliasVoid { x: number; format: VoidFn; }
+const aliasVoid: AliasVoid = {x: 1, format: (n: number): string => String(n)};
+const aliasHolder = {inner: aliasVoid};
+export const aliasText = aliasHolder.inner.format(2);
+
+interface MethodVoid { x: number; format(this: void, n: number): string; }
+const methodVoid: MethodVoid = {x: 1, format: (n: number): string => String(n)};
+const methodHolder = {inner: methodVoid};
+export const methodText = methodHolder.inner.format(2);
+
+const helperHolder = {inner: helper};
+export const heldHelperText = helperHolder.inner.format(2);
+
 const casted = {x: [1]};
 (casted.x.push as (n: number) => number)(2);
 
@@ -255,6 +280,12 @@ export class ConstsView {
     @live public get augmentedX(): number { return augmented.x.length; }
     @live public get indexedBrandX(): number { return indexedBrand.x.length; }
     @live public get voidThisX(): number { return voidThis.x; }
+    @live public get fieldedX(): number { return fielded.b.x; }
+    @live public get augmentedArrayX(): number { return augmentedArray.x.length; }
+    @live public get spreadOverX(): number { return spreadOver.x; }
+    @live public get aliasHolderX(): number { return aliasHolder.inner.x; }
+    @live public get methodHolderX(): number { return methodHolder.inner.x; }
+    @live public get helperHolderX(): number { return helperHolder.inner.x; }
     @live public get branchedX(): number { return branched.x.length; }
     @live public get indexedX(): number { return indexed.x.length; }
     @live public get elementX(): number { return element.x.length; }
