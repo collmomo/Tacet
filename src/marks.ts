@@ -35,9 +35,10 @@ export function findScriptOpening(source: string, contentOffset: number): number
     return source.lastIndexOf("<script", contentOffset);
 }
 
-export function promoteScriptToSetup(source: string, contentOffset: number): string | undefined {
+/** The offset comes from the parser's own descriptor, so the opening tag is always there; an absent one leaves the source as it is. */
+export function promoteScriptToSetup(source: string, contentOffset: number): string {
     const opening = findScriptOpening(source, contentOffset);
-    if (opening < 0) return undefined;
+    if (opening < 0) return source;
     const after = opening + "<script".length;
     return source.slice(0, after) + " setup" + source.slice(after);
 }

@@ -104,14 +104,21 @@ function isUnderConstAssertion(declaration: ts.Node): boolean {
     return ts.isAsExpression(literal.parent) && ts.isConstTypeReference(literal.parent.type);
 }
 
+/** A wrapper that hands its operand on unchanged: parentheses, `!`, `as`, `satisfies`, `<T>`, the right side of a comma. */
+function isTransparentWrapper(parent: ts.Node, node: ts.Node): boolean {
+    if (ts.isParenthesizedExpression(parent) || ts.isNonNullExpression(parent) || ts.isAsExpression(parent) || ts.isSatisfiesExpression(parent) || ts.isTypeAssertionExpression(parent)) return true;
+    return ts.isBinaryExpression(parent) && parent.operatorToken.kind === ts.SyntaxKind.CommaToken && parent.right === node;
+}
+
 /** Whether `node` is assigned, counted, deleted or mutated through a method, itself or through a path into it. */
 function isWriteTarget(node: ts.Node): boolean {
     let target = node;
     for (;;) {
         const parent = target.parent;
         if (ts.isCallExpression(parent) && parent.expression === target) {
-            if (ts.isPropertyAccessExpression(target) && MUTATORS.has(target.name.text)) return true;
-        } else if (!((ts.isPropertyAccessExpression(parent) || ts.isElementAccessExpression(parent)) && parent.expression === target) && !ts.isNonNullExpression(parent) && !ts.isParenthesizedExpression(parent)) {
+            // A call on the path writes only through a mutator; what it returns is not the field.
+            return ts.isPropertyAccessExpression(target) && MUTATORS.has(target.name.text);
+        } else if (!((ts.isPropertyAccessExpression(parent) || ts.isElementAccessExpression(parent)) && parent.expression === target) && !isTransparentWrapper(parent, target)) {
             if (ts.isBinaryExpression(parent)) return parent.left === target && isAssignmentOperator(parent.operatorToken.kind);
             if (ts.isPrefixUnaryExpression(parent) || ts.isPostfixUnaryExpression(parent)) return isCountOperator(parent.operator);
             if (ts.isForOfStatement(parent) || ts.isForInStatement(parent)) return parent.initializer === target;
@@ -799,12 +806,24 @@ declare function __event(handler: ($event: any) => unknown): void;
 declare function __ref(field: unknown): void;
 declare const $event: any, $attrs: any, $slots: any, $refs: any, $el: any, $props: any, $emit: any, $nextTick: any;
 `;
-/** Vue's own words for a directive its transform refuses, asked of the host's compiler once: the check never runs that transform. */
-function readDirectiveError(template: string): string {
+/** Vue's own words for a directive its transform refuses, asked of the host's compiler at the first template checked. */
+function readDirectiveError(template: string, fallback: string): string {
     const error = compileTemplate({source: template, filename: "tacet-probe.vue", id: "tacet-probe"}).errors[0];
-    return typeof error === "string" ? error : error.message;
+    return error === undefined ? fallback : typeof error === "string" ? error : error.message;
 }
-const DIRECTIVE_ERRORS = {missingCondition: readDirectiveError("<p v-if></p>"), missingItems: readDirectiveError("<p v-for></p>"), brokenItems: readDirectiveError('<p v-for="x"></p>')};
+
+interface DirectiveErrors { missingCondition: string; missingItems: string; brokenItems: string; }
+
+let directiveErrors: DirectiveErrors | undefined;
+
+function readDirectiveErrors(): DirectiveErrors {
+    directiveErrors ??= {
+        missingCondition: readDirectiveError("<p v-if></p>", "v-if/v-else-if is missing expression."),
+        missingItems: readDirectiveError("<p v-for></p>", "v-for is missing expression."),
+        brokenItems: readDirectiveError('<p v-for="x"></p>', "v-for has invalid expression."),
+    };
+    return directiveErrors;
+}
 /** A static `ref` whose value is a path into an object, the form `src/files.ts` rewrites into an assignment. */
 const REF_PATH = /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+$/;
 
@@ -828,8 +847,7 @@ function buildVirtualFile(tacet: string, source: string): VirtualFile {
     if (script !== null) {
         parts.push(script.content);
         try {
-            const promoted = descriptor.scriptSetup === null ? promoteScriptToSetup(source, script.loc.start.offset) : undefined;
-            const setup = promoted === undefined ? descriptor : parseSfc(promoted, {filename: tacet}).descriptor;
+            const setup = descriptor.scriptSetup === null ? parseSfc(promoteScriptToSetup(source, script.loc.start.offset), {filename: tacet}).descriptor : descriptor;
             const compiled = compileScript(setup, {id: tacet});
             propNames = Object.entries(compiled.bindings ?? {}).filter(([, kind]) => kind === "props").map(([name]) => name);
             const typeArgument = /defineProps\s*<([^]*?)>\s*\(/.exec(script.content);
@@ -877,8 +895,8 @@ function buildVirtualFile(tacet: string, source: string): VirtualFile {
     const emitElement = (node: ElementNode, siblings: TemplateChildNode[], index: number): number => {
         const directives = node.props.filter((prop): prop is DirectiveNode => prop.type === 7);
         for (const directive of directives) {
-            if ((directive.name === "if" || directive.name === "else-if") && directive.exp === undefined) reportDirective(directive, DIRECTIVE_ERRORS.missingCondition);
-            if (directive.name === "for" && directive.forParseResult === undefined) reportDirective(directive, directive.exp === undefined ? DIRECTIVE_ERRORS.missingItems : DIRECTIVE_ERRORS.brokenItems);
+            if ((directive.name === "if" || directive.name === "else-if") && directive.exp === undefined) reportDirective(directive, readDirectiveErrors().missingCondition);
+            if (directive.name === "for" && directive.forParseResult === undefined) reportDirective(directive, directive.exp === undefined ? readDirectiveErrors().missingItems : readDirectiveErrors().brokenItems);
         }
         const vFor = directives.find(d => d.name === "for");
         const vIf = directives.find(d => d.name === "if");

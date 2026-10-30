@@ -3,11 +3,13 @@ import ts from "typescript";
 import {findScriptOpening, promoteScriptToSetup, readDecoratorMark, readMark, readMarkName, readTagMark} from "../src/marks";
 
 describe("the shared helpers", () => {
-    it("promotes the script tag before the content, and says when there is none", () => {
+    it("promotes the script tag before the content, finds the tag, and leaves a source with no tag alone", () => {
         const source = `<template></template>\n<script lang="ts">\nconst a = 1;\n</script>`;
         const content = source.indexOf("\nconst a");
         expect(promoteScriptToSetup(source, content)).toBe(`<template></template>\n<script setup lang="ts">\nconst a = 1;\n</script>`);
-        expect(promoteScriptToSetup("const a = 1;", 0)).toBeUndefined();
+        expect(promoteScriptToSetup("const a = 1;", 0)).toBe("const a = 1;");
+        expect(findScriptOpening(`<template></template><script lang="ts">x</script>`, 40)).toBe(21);
+        expect(findScriptOpening("no tag", 3)).toBe(-1);
     });
 
     it("knows the two marks and nothing else", () => {
@@ -31,7 +33,5 @@ describe("the mark readers", () => {
         expect(readTagMark(decorated)).toBeUndefined();
         expect(readMark(both)).toBe("live");
         expect(readMark(plain)).toBeUndefined();
-        expect(findScriptOpening(`<template></template><script lang="ts">x</script>`, 40)).toBe(21);
-        expect(findScriptOpening("no tag", 3)).toBe(-1);
     });
 });

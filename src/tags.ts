@@ -77,7 +77,7 @@ export function rewriteTags(code: string, id: string, options: TagsOptions = {})
                 const name = tag.tagName.text;
                 const known = readMarkName(name);
                 if (known !== undefined) mark = known;
-                else if (name.length >= 3 && Math.min(...MARK_NAMES.map(known => measureEditDistance(name, known))) <= 2) {
+                else if (name.length >= 3 && Math.min(...MARK_NAMES.map(candidate => measureEditDistance(name, candidate))) <= 2) {
                     warnings.push(`${formatPosition(member)}: "@${name}" is not a Tacet mark. Did you mean ${MARK_HINT}? The field stays plain.`);
                 }
             }

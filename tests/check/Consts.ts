@@ -41,6 +41,19 @@ const pushed = {x: [1]};
 const pathed = {x: {y: 1}};
 (pathed.x).y = 2;
 
+const asserted = {x: {y: 1}};
+(asserted.x as {y: number}).y = 2;
+
+const satisfied = {x: {y: 1}};
+(satisfied.x satisfies {y: number}).y = 2;
+
+const sequenced = {x: {y: 1}};
+(0, sequenced.x).y = 2;
+
+const copied = {x: [1]};
+copied.x.slice().push(2);
+copied.x.map(n => n)[0] = 1;
+
 export class ConstsView {
     @live public get loopedN(): number { return looped[0].n; }
     @live public get keyedN(): number { return keyed[0].n; }
@@ -55,4 +68,8 @@ export class ConstsView {
     @live public get deletedX(): number | undefined { return deleted.x; }
     @live public get pushedX(): number { return pushed.x.length; }
     @live public get pathedX(): number { return pathed.x.y; }
+    @live public get assertedX(): number { return asserted.x.y; }
+    @live public get satisfiedX(): number { return satisfied.x.y; }
+    @live public get sequencedX(): number { return sequenced.x.y; }
+    @live public get copiedX(): number { return copied.x.length; }
 }
