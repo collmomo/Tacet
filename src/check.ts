@@ -208,18 +208,26 @@ class Analysis {
         return type.getCallSignatures().length > 0 && type.getProperties().length === 0;
     }
 
-    /** What a call on the path does to the data it is reached through, judged by the callee's declaration and its result. */
-    private readCallEffect(callee: ts.Node, call: ts.CallExpression): CallEffect {
-        if (isValueWrapper(callee)) return this.readCallEffect(callee.expression, call);
-        if (ts.isConditionalExpression(callee)) return worstEffect(this.readCallEffect(callee.whenTrue, call), this.readCallEffect(callee.whenFalse, call));
+    /** A type that holds nothing of anyone's: a primitive, void, null, undefined, never. `any` and `unknown` are not. */
+    private isPrimitiveType(type: ts.Type): boolean {
+        const flags = type.getFlags();
+        if (flags & (ts.TypeFlags.StringLike | ts.TypeFlags.NumberLike | ts.TypeFlags.BooleanLike | ts.TypeFlags.BigIntLike | ts.TypeFlags.ESSymbolLike | ts.TypeFlags.EnumLike | ts.TypeFlags.Void | ts.TypeFlags.Undefined | ts.TypeFlags.Null | ts.TypeFlags.Never)) return true;
+        return type.isUnion() && type.types.every(part => this.isPrimitiveType(part));
+    }
+
+    /** What a callee does to the data it is reached through, by its declaration: on a branched callee, the worst branch. */
+    private readCalleeEffect(callee: ts.Node): CallEffect {
+        if (isValueWrapper(callee)) return this.readCalleeEffect(callee.expression);
+        if (ts.isConditionalExpression(callee)) return worstEffect(this.readCalleeEffect(callee.whenTrue), this.readCalleeEffect(callee.whenFalse));
         if (ts.isBinaryExpression(callee)) {
             const kind = callee.operatorToken.kind;
             // `a && b` and `a, b` call b; `a || b` and `a ?? b` call either.
-            if (kind === ts.SyntaxKind.AmpersandAmpersandToken || kind === ts.SyntaxKind.CommaToken) return this.readCallEffect(callee.right, call);
-            return worstEffect(this.readCallEffect(callee.left, call), this.readCallEffect(callee.right, call));
+            if (kind === ts.SyntaxKind.AmpersandAmpersandToken || kind === ts.SyntaxKind.CommaToken) return this.readCalleeEffect(callee.right);
+            return worstEffect(this.readCalleeEffect(callee.left), this.readCalleeEffect(callee.right));
         }
         if (!ts.isPropertyAccessExpression(callee) && !ts.isElementAccessExpression(callee)) return "passes";
         const baseType = this.checker.getTypeAtLocation(callee.expression);
+        if (this.isPrimitiveType(baseType)) return "ends";
         if (baseType.getFlags() & (ts.TypeFlags.Any | ts.TypeFlags.Unknown) || baseType.getCallSignatures().length > 0) return "mutates";
         let name: string | undefined;
         if (ts.isPropertyAccessExpression(callee)) name = callee.name.text;
@@ -229,14 +237,16 @@ class Analysis {
             else if (keyType.getFlags() & ts.TypeFlags.NumberLike) return "passes";
             else return "mutates";
         }
-        // A primitive holds nothing of the field's, so its methods end the walk whatever they return.
-        if (this.isLeafType(baseType)) return "ends";
         const declaration = this.findDeclaration(this.checker.getPropertyOfType(baseType.getNonNullableType(), name));
         if (declaration === undefined || !declaration.getSourceFile().isDeclarationFile || this.nameContainer(baseType) === undefined) return "mutates";
-        if (MUTATORS.has(name)) return "mutates";
-        // The result is judged for the whole call, a union over the branches of a conditional callee; `any` may be anything.
-        const result = this.checker.getTypeAtLocation(call);
-        return result.getFlags() & (ts.TypeFlags.Any | ts.TypeFlags.Unknown) ? "passes" : this.isLeafType(result) ? "ends" : "passes";
+        return MUTATORS.has(name) ? "mutates" : "passes";
+    }
+
+    /** What a call on the path does: its callee's effect, and when that hands the result on, whether the result can hold the field's data. */
+    private readCallEffect(call: ts.CallExpression): CallEffect {
+        const effect = this.readCalleeEffect(call.expression);
+        if (effect !== "passes") return effect;
+        return this.isPrimitiveType(this.checker.getTypeAtLocation(call)) ? "ends" : "passes";
     }
 
     /** Whether `node` is assigned, counted, deleted or mutated through a method, itself or through a path into it. */
@@ -248,7 +258,7 @@ class Analysis {
                 target = climbValue(parent);
             } else if (ts.isCallExpression(parent) && parent.expression === target) {
                 // A result that may be the field's own data (an element, a copy of elements) carries the walk on; a primitive ends it.
-                const effect = this.readCallEffect(target, parent);
+                const effect = this.readCallEffect(parent);
                 if (effect !== "passes") return effect === "mutates";
                 target = climbValue(parent);
             } else {

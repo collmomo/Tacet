@@ -98,6 +98,13 @@ mapped.x.get("k").push(1);
 const joined = {x: [1]};
 export const joinedLength = joined.x.join(",").length;
 
+const unknowns = {x: new Map<string, unknown>()};
+(unknowns.x.get("k") as number[]).push(1);
+
+const keyedPrimitive = {x: "a,b"};
+const primitiveKey: "trim" | "toUpperCase" = Math.random() > 2 ? "trim" : "toUpperCase";
+keyedPrimitive.x[primitiveKey]();
+
 const casted = {x: [1]};
 (casted.x.push as (n: number) => number)(2);
 
@@ -139,6 +146,8 @@ export class ConstsView {
     @live public get appliedX(): number { return applied.x.length; }
     @live public get mappedX(): number { return mapped.x.size; }
     @live public get joinedX(): number { return joined.x.length; }
+    @live public get unknownsX(): number { return unknowns.x.size; }
+    @live public get keyedPrimitiveX(): number { return keyedPrimitive.x.length; }
     @live public get branchedX(): number { return branched.x.length; }
     @live public get indexedX(): number { return indexed.x.length; }
     @live public get elementX(): number { return element.x.length; }
