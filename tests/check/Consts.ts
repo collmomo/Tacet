@@ -224,6 +224,15 @@ const replaced = {x: [1], f: (): void => {}};
 replaced.f = function (this: {x: number[]}): void { this.x.push(2); };
 replaced.f();
 
+interface Annotated { x: number[]; f: (n: number) => void; }
+const annotated: Annotated = {x: [1], f: (): void => {}};
+annotated.f(2);
+
+const count = {n: kids.length, items: [1]};
+
+const heldApi = {x: [1], api};
+export const apiText = heldApi.api.format(2);
+
 const casted = {x: [1]};
 (casted.x.push as (n: number) => number)(2);
 
@@ -300,6 +309,9 @@ export class ConstsView {
     @live public get kidsCount(): number { return kids.length; }
     @live public get optionalHolderX(): number { return optionalHolder.inner.x; }
     @live public get replacedX(): number { return replaced.x.length; }
+    @live public get annotatedX(): number { return annotated.x.length; }
+    @live public get countItems(): number { return count.items.length; }
+    @live public get heldApiX(): number { return heldApi.x.length; }
     @live public get branchedX(): number { return branched.x.length; }
     @live public get indexedX(): number { return indexed.x.length; }
     @live public get elementX(): number { return element.x.length; }

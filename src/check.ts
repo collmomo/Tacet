@@ -280,24 +280,25 @@ class Analysis {
         const inner = unwrapValue(receiver);
         if (!ts.isIdentifier(inner)) return undefined;
         const declaration = this.findDeclaration(this.checker.getSymbolAtLocation(inner));
+        if (declaration === undefined || !ts.isVariableDeclaration(declaration)) return undefined;
         const literal = findConstInitializer(declaration);
-        if (literal === undefined || !ts.isObjectLiteralExpression(literal) || this.isWrittenConst(declaration as ts.VariableDeclaration)) return undefined;
+        if (literal === undefined || !ts.isObjectLiteralExpression(literal)) return undefined;
         let found: ts.ObjectLiteralElementLike | undefined;
         for (const property of literal.properties) {
             if (ts.isSpreadAssignment(property)) { if (found !== undefined) return undefined; }
             else if (property.name !== undefined && ts.isIdentifier(property.name) && property.name.text === name) found = property;
         }
+        // While its file is being classified the literal is trusted: a replacement of the property is a write that classification finds on its own.
+        if (found !== undefined && !this.classifying.has(declaration.getSourceFile()) && this.isWrittenConst(declaration)) return undefined;
         return found;
     }
 
     /** What the library's declaration of a callee may do: a container's mutator writes, Object's and Function's own members never, any other library object's may. */
-    private readLibraryCalleeEffect(allDefault: boolean, fromObjectOrFunction: boolean, receiver: ts.Node, baseType: ts.Type, name: string): CallEffect {
+    private readLibraryCalleeEffect(fromObjectOrFunction: boolean, receiver: ts.Node, baseType: ts.Type, name: string): CallEffect {
         if (baseType.getCallSignatures().length > 0) {
             // `f.call(...)`, `f.apply(...)` run the receiver; `f.bind(...)` hands it on to be run; what it would do, called itself.
             return name === "call" || name === "apply" || name === "bind" ? this.readCalleeEffect(receiver) : "passes";
         }
-        // Only the default library's own members are known: a dependency's or an augmentation's may change what holds them.
-        if (!allDefault) return "mutates";
         if (fromObjectOrFunction) return "passes";
         if (this.nameContainer(baseType) === undefined) return "mutates";
         return MUTATORS.has(name) ? "mutates" : "passes";
@@ -336,21 +337,19 @@ class Analysis {
         if (implementation !== undefined) return this.readProjectCalleeEffect(implementation);
         const declarations = this.checker.getPropertyOfType(baseType.getNonNullableType(), name)?.declarations ?? [];
         if (declarations.length === 0) return "mutates";
-        // A union's property has one declaration per part; the worst decides, the library's judged once.
-        // A union's property has one declaration per part; the worst decides, the library's judged once.
+        // A union's property has one declaration per part; the worst decides. Only the default library's members are known as the
+        // library's; a project's ambient types, a dependency's and an augmentation's are judged by the project rule, which honours `this: void`.
         const effects: CallEffect[] = [];
         let hasLibrary = false;
-        let allDefault = true;
         let fromObjectOrFunction = true;
         for (const declaration of declarations) {
-            if (!declaration.getSourceFile().isDeclarationFile) effects.push(this.readProjectCalleeEffect(declaration));
+            if (!this.isDefaultLibrary(declaration.getSourceFile())) effects.push(this.readProjectCalleeEffect(declaration));
             else {
                 hasLibrary = true;
-                allDefault &&= this.isDefaultLibrary(declaration.getSourceFile());
                 fromObjectOrFunction &&= this.isDefaultObjectMember(declaration);
             }
         }
-        if (hasLibrary) effects.push(this.readLibraryCalleeEffect(allDefault, fromObjectOrFunction, callee.expression, baseType, name));
+        if (hasLibrary) effects.push(this.readLibraryCalleeEffect(fromObjectOrFunction, callee.expression, baseType, name));
         return worstEffect(...effects);
     }
 
@@ -586,8 +585,8 @@ class Analysis {
             this.muted--;
             this.stack.delete(declaration);
         }
-        // An initializer the check could not follow (a library object that changes, a plain field) leaves a fixed value, whose reads are judged where they happen.
-        if (this.mutedErrors > troubled) return "fixed";
+        // A value the check could not follow (a library object that changes, a plain field) stays fixed, its reads judged where they happen; a literal is its own.
+        if (this.mutedErrors > troubled && source === "leaf") return "fixed";
         if (ts.isVariableDeclarationList(list) && ts.isVariableStatement(list.parent) && ts.isSourceFile(list.parent.parent) && !this.isWrittenConst(declaration)) return "fresh";
         return source === "fresh" ? "fixed" : source;
     }
@@ -941,7 +940,7 @@ class Analysis {
         if (known !== undefined) return known;
         if (getter.body === undefined || this.stack.has(getter)) return "fixed";
         // A getter reached through an outer const's initializer is still checked aloud: its reads are its own.
-        const outer = {template: this.template, current: this.current, muted: this.muted};
+        const outer = {template: this.template, current: this.current, muted: this.muted, mutedErrors: this.mutedErrors};
         this.template = false;
         this.muted = 0;
         this.stack.add(getter);
@@ -955,6 +954,7 @@ class Analysis {
             this.template = outer.template;
             this.current = outer.current;
             this.muted = outer.muted;
+            this.mutedErrors = outer.mutedErrors;
         }
         const result = returns.length === 0 ? "leaf" : returns.reduce(mergeSources);
         this.getterResults.set(getter, result);
