@@ -15,3 +15,24 @@ describe("the shared helpers", () => {
         expect(readMarkName("lvie")).toBeUndefined();
     });
 });
+
+describe("the mark readers", () => {
+    const ts = require("typescript") as typeof import("typescript");
+    const members = (code: string): ts.ClassElement[] => {
+        const file = ts.createSourceFile("m.ts", code, ts.ScriptTarget.Latest, true);
+        return (file.statements[0] as ts.ClassDeclaration).members.slice();
+    };
+    it("reads a decorator, plain or called, a tag, and lets the decorator win", async () => {
+        const {readDecoratorMark, readMark, readTagMark, findScriptOpening} = await import("../src/marks");
+        const [decorated, called, tagged, both, plain] = members(`class V {\n @live a = 1;\n @deep() b = [];\n /** @live */ c = 1;\n /** @deep */ @live d = 1;\n e = 1;\n}`);
+        expect(readDecoratorMark(decorated)).toBe("live");
+        expect(readDecoratorMark(called)).toBe("deep");
+        expect(readDecoratorMark(tagged)).toBeUndefined();
+        expect(readTagMark(tagged)).toBe("live");
+        expect(readTagMark(decorated)).toBeUndefined();
+        expect(readMark(both)).toBe("live");
+        expect(readMark(plain)).toBeUndefined();
+        expect(findScriptOpening(`<template></template><script lang="ts">x</script>`, 40)).toBe(21);
+        expect(findScriptOpening("no tag", 3)).toBe(-1);
+    });
+});

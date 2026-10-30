@@ -15,6 +15,7 @@ export interface TagsResult {
     errors: string[];
 }
 
+const MARK_HINT = MARK_NAMES.map(known => `@${known}`).join(" or ");
 const QUICK = new RegExp(`@(?:${MARK_NAMES.join("|")})\\b|/\\*\\*\\s*@[a-z]+\\s*\\*/|\\bas\\s+live\\b`);
 
 function readScriptKind(id: string): ts.ScriptKind {
@@ -76,8 +77,8 @@ export function rewriteTags(code: string, id: string, options: TagsOptions = {})
                 const name = tag.tagName.text;
                 const known = readMarkName(name);
                 if (known !== undefined) mark = known;
-                else if (name.length >= 3 && Math.min(...MARK_NAMES.map(mark => measureEditDistance(name, mark))) <= 2) {
-                    warnings.push(`${formatPosition(member)}: "@${name}" is not a Tacet mark. Did you mean ${MARK_NAMES.map(mark => `@${mark}`).join(" or ")}? The field stays plain.`);
+                else if (name.length >= 3 && Math.min(...MARK_NAMES.map(known => measureEditDistance(name, known))) <= 2) {
+                    warnings.push(`${formatPosition(member)}: "@${name}" is not a Tacet mark. Did you mean ${MARK_HINT}? The field stays plain.`);
                 }
             }
             if (mark === undefined) continue;

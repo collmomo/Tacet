@@ -1,8 +1,8 @@
 // The build check: every read of a `@live` getter or a `.tacet` template is followed hop by hop through the types, and a read the screen could not follow is an error naming it.
 import ts from "typescript";
 import path from "node:path";
-import {compileScript, parse as parseSfc} from "vue/compiler-sfc";
-import {ErrorCodes, errorMessages, type DirectiveNode, type ElementNode, type ExpressionNode, type RootNode, type TemplateChildNode} from "@vue/compiler-core";
+import {compileScript, compileTemplate, parse as parseSfc} from "vue/compiler-sfc";
+import type {DirectiveNode, type ElementNode, type ExpressionNode, type RootNode, type TemplateChildNode} from "@vue/compiler-core";
 import {promoteScriptToSetup, readMark} from "./marks.js";
 
 export interface Diagnostic {
@@ -86,15 +86,15 @@ function isCountOperator(kind: ts.SyntaxKind): boolean {
     return kind === ts.SyntaxKind.PlusPlusToken || kind === ts.SyntaxKind.MinusMinusToken;
 }
 
-/** Whether `node` sits in a slot of an array or object literal, a spread, a property's value or parentheses. */
+/** Whether `node` sits in a slot of an array or object literal, a spread or a property's value. */
 function isLiteralSlot(parent: ts.Node, node: ts.Node): boolean {
-    return ts.isArrayLiteralExpression(parent) || ts.isObjectLiteralExpression(parent) || ts.isSpreadElement(parent) || ts.isSpreadAssignment(parent) || ts.isParenthesizedExpression(parent) || (ts.isPropertyAssignment(parent) && parent.initializer === node);
+    return ts.isArrayLiteralExpression(parent) || ts.isObjectLiteralExpression(parent) || ts.isSpreadElement(parent) || ts.isSpreadAssignment(parent) || (ts.isPropertyAssignment(parent) && parent.initializer === node);
 }
 
-/** The outermost literal `node` sits in, or `node` itself. */
+/** The outermost literal `node` sits in, through parentheses, or `node` itself. */
 function climbLiteral(node: ts.Node): ts.Node {
     let literal = node;
-    while (isLiteralSlot(literal.parent, literal)) literal = literal.parent;
+    while (isLiteralSlot(literal.parent, literal) || ts.isParenthesizedExpression(literal.parent)) literal = literal.parent;
     return literal;
 }
 
@@ -111,15 +111,17 @@ function isWriteTarget(node: ts.Node): boolean {
         const parent = target.parent;
         if (ts.isCallExpression(parent) && parent.expression === target) {
             if (ts.isPropertyAccessExpression(target) && MUTATORS.has(target.name.text)) return true;
-        } else if (!((ts.isPropertyAccessExpression(parent) || ts.isElementAccessExpression(parent)) && parent.expression === target) && !ts.isNonNullExpression(parent)) {
-            // A destructuring pattern is a literal on the left of `=` or in a loop head: climb it, then judge its place.
+        } else if (!((ts.isPropertyAccessExpression(parent) || ts.isElementAccessExpression(parent)) && parent.expression === target) && !ts.isNonNullExpression(parent) && !ts.isParenthesizedExpression(parent)) {
+            if (ts.isBinaryExpression(parent)) return parent.left === target && isAssignmentOperator(parent.operatorToken.kind);
+            if (ts.isPrefixUnaryExpression(parent) || ts.isPostfixUnaryExpression(parent)) return isCountOperator(parent.operator);
+            if (ts.isForOfStatement(parent) || ts.isForInStatement(parent)) return parent.initializer === target;
+            if (ts.isDeleteExpression(parent)) return true;
+            if (!isLiteralSlot(parent, target)) return false;
+            // A destructuring pattern is a literal on the left of `=` or in a loop head.
             const literal = climbLiteral(target);
             const holder = literal.parent;
-            if (ts.isBinaryExpression(holder)) return holder.left === literal && (literal === target ? isAssignmentOperator(holder.operatorToken.kind) : holder.operatorToken.kind === ts.SyntaxKind.EqualsToken);
-            if (ts.isForOfStatement(holder) || ts.isForInStatement(holder)) return holder.initializer === literal;
-            if (literal !== target) return false;
-            if (ts.isPrefixUnaryExpression(parent) || ts.isPostfixUnaryExpression(parent)) return isCountOperator(parent.operator);
-            return ts.isDeleteExpression(parent);
+            if (ts.isBinaryExpression(holder)) return holder.left === literal && holder.operatorToken.kind === ts.SyntaxKind.EqualsToken;
+            return (ts.isForOfStatement(holder) || ts.isForInStatement(holder)) && holder.initializer === literal;
         }
         target = parent;
     }
@@ -797,8 +799,12 @@ declare function __event(handler: ($event: any) => unknown): void;
 declare function __ref(field: unknown): void;
 declare const $event: any, $attrs: any, $slots: any, $refs: any, $el: any, $props: any, $emit: any, $nextTick: any;
 `;
-/** Vue's wording for a directive its transform refuses; the check never runs that transform, so it says the same words itself. */
-const DIRECTIVE_ERRORS = {missingCondition: errorMessages[ErrorCodes.X_V_IF_NO_EXPRESSION], missingItems: errorMessages[ErrorCodes.X_V_FOR_NO_EXPRESSION], brokenItems: errorMessages[ErrorCodes.X_V_FOR_MALFORMED_EXPRESSION]};
+/** Vue's own words for a directive its transform refuses, asked of the host's compiler once: the check never runs that transform. */
+function readDirectiveError(template: string): string {
+    const error = compileTemplate({source: template, filename: "tacet-probe.vue", id: "tacet-probe"}).errors[0];
+    return typeof error === "string" ? error : error.message;
+}
+const DIRECTIVE_ERRORS = {missingCondition: readDirectiveError("<p v-if></p>"), missingItems: readDirectiveError("<p v-for></p>"), brokenItems: readDirectiveError('<p v-for="x"></p>')};
 /** A static `ref` whose value is a path into an object, the form `src/files.ts` rewrites into an assignment. */
 const REF_PATH = /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+$/;
 
@@ -821,10 +827,9 @@ function buildVirtualFile(tacet: string, source: string): VirtualFile {
     let propsType = "any";
     if (script !== null) {
         parts.push(script.content);
-        const promoted = descriptor.scriptSetup === null ? promoteScriptToSetup(source, script.loc.start.offset) : source;
-        if (promoted === undefined) diagnostics.push({file: tacet, ...findLineColumn(source, script.loc.start.offset), level: "error", message: "The script's opening tag was not found, so its props are unknown to the check."});
         try {
-            const setup = promoted === undefined || promoted === source ? descriptor : parseSfc(promoted, {filename: tacet}).descriptor;
+            const promoted = descriptor.scriptSetup === null ? promoteScriptToSetup(source, script.loc.start.offset) : undefined;
+            const setup = promoted === undefined ? descriptor : parseSfc(promoted, {filename: tacet}).descriptor;
             const compiled = compileScript(setup, {id: tacet});
             propNames = Object.entries(compiled.bindings ?? {}).filter(([, kind]) => kind === "props").map(([name]) => name);
             const typeArgument = /defineProps\s*<([^]*?)>\s*\(/.exec(script.content);

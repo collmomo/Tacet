@@ -26,6 +26,21 @@ const held = {x: 1};
 const copies = [[held.x]];
 export const copyCount = copies.length;
 
+const counted = {x: 1};
+(counted.x)++;
+
+const added = {x: 1};
+(added.x) += 1;
+
+const deleted: {x?: number} = {x: 1};
+delete (deleted.x);
+
+const pushed = {x: [1]};
+(pushed.x).push(2);
+
+const pathed = {x: {y: 1}};
+(pathed.x).y = 2;
+
 export class ConstsView {
     @live public get loopedN(): number { return looped[0].n; }
     @live public get keyedN(): number { return keyed[0].n; }
@@ -35,4 +50,9 @@ export class ConstsView {
     @live public get patternX(): number { return pattern.x; }
     @live public get parenX(): number { return paren.x; }
     @live public get heldX(): number { return held.x; }
+    @live public get countedX(): number { return counted.x; }
+    @live public get addedX(): number { return added.x; }
+    @live public get deletedX(): number | undefined { return deleted.x; }
+    @live public get pushedX(): number { return pushed.x.length; }
+    @live public get pathedX(): number { return pathed.x.y; }
 }
