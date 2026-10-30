@@ -125,8 +125,12 @@ function climbValue(node: ts.Node): ts.Node {
     return current;
 }
 
-/** Methods of a library container that hand back a new container, never the one they were called on. */
-const COPIERS = new Set(["slice", "filter", "map", "concat", "flat", "flatMap", "toSorted", "toReversed", "toSpliced", "with", "split", "join", "toString", "at", "includes", "indexOf", "lastIndexOf", "some", "every", "reduce", "reduceRight", "findIndex", "findLastIndex"]);
+/** A call on the path: it writes, its result cannot be the field's data, or its result may be and the walk goes on. */
+type CallEffect = "mutates" | "ends" | "passes";
+
+function worstEffect(...effects: CallEffect[]): CallEffect {
+    return effects.includes("mutates") ? "mutates" : effects.includes("passes") ? "passes" : "ends";
+}
 
 /** Whether `target` is the left of an assignment, the operand of a count or of a delete. */
 function isDirectWrite(target: ts.Node): boolean {
@@ -204,20 +208,19 @@ class Analysis {
         return type.getCallSignatures().length > 0 && type.getProperties().length === 0;
     }
 
-    /** What a call on the path does to the data it is reached through, judged by the callee's declaration. */
-    private readCallEffect(callee: ts.Node): "mutates" | "copies" | "passes" {
-        const worst = (...effects: ("mutates" | "copies" | "passes")[]): "mutates" | "copies" | "passes" => effects.includes("mutates") ? "mutates" : effects.includes("passes") ? "passes" : "copies";
-        if (isValueWrapper(callee)) return this.readCallEffect(callee.expression);
-        if (ts.isConditionalExpression(callee)) return worst(this.readCallEffect(callee.whenTrue), this.readCallEffect(callee.whenFalse));
+    /** What a call on the path does to the data it is reached through, judged by the callee's declaration and its result. */
+    private readCallEffect(callee: ts.Node, call: ts.CallExpression): CallEffect {
+        if (isValueWrapper(callee)) return this.readCallEffect(callee.expression, call);
+        if (ts.isConditionalExpression(callee)) return worstEffect(this.readCallEffect(callee.whenTrue, call), this.readCallEffect(callee.whenFalse, call));
         if (ts.isBinaryExpression(callee)) {
             const kind = callee.operatorToken.kind;
             // `a && b` and `a, b` call b; `a || b` and `a ?? b` call either.
-            return kind === ts.SyntaxKind.AmpersandAmpersandToken || kind === ts.SyntaxKind.CommaToken ? this.readCallEffect(callee.right) : worst(this.readCallEffect(callee.left), this.readCallEffect(callee.right));
+            if (kind === ts.SyntaxKind.AmpersandAmpersandToken || kind === ts.SyntaxKind.CommaToken) return this.readCallEffect(callee.right, call);
+            return worstEffect(this.readCallEffect(callee.left, call), this.readCallEffect(callee.right, call));
         }
         if (!ts.isPropertyAccessExpression(callee) && !ts.isElementAccessExpression(callee)) return "passes";
         const baseType = this.checker.getTypeAtLocation(callee.expression);
-        if (baseType.getFlags() & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) return "mutates";
-        if (baseType.getCallSignatures().length > 0) return "mutates";
+        if (baseType.getFlags() & (ts.TypeFlags.Any | ts.TypeFlags.Unknown) || baseType.getCallSignatures().length > 0) return "mutates";
         let name: string | undefined;
         if (ts.isPropertyAccessExpression(callee)) name = callee.name.text;
         else {
@@ -226,34 +229,24 @@ class Analysis {
             else if (keyType.getFlags() & ts.TypeFlags.NumberLike) return "passes";
             else return "mutates";
         }
-        if (this.isLeafType(baseType)) return "copies";
-        const property = this.checker.getPropertyOfType(baseType.getNonNullableType(), name);
-        const declaration = this.findDeclaration(property);
-        if (declaration === undefined || !declaration.getSourceFile().isDeclarationFile) return "mutates";
-        if (this.nameContainer(baseType) === undefined) return "mutates";
-        return MUTATORS.has(name) ? "mutates" : COPIERS.has(name) ? "copies" : "passes";
+        const resultIsLeaf = this.isLeafType(this.checker.getTypeAtLocation(call));
+        if (this.isLeafType(baseType)) return resultIsLeaf ? "ends" : "passes";
+        const declaration = this.findDeclaration(this.checker.getPropertyOfType(baseType.getNonNullableType(), name));
+        if (declaration === undefined || !declaration.getSourceFile().isDeclarationFile || this.nameContainer(baseType) === undefined) return "mutates";
+        return MUTATORS.has(name) ? "mutates" : resultIsLeaf ? "ends" : "passes";
     }
 
     /** Whether `node` is assigned, counted, deleted or mutated through a method, itself or through a path into it. */
     private isWriteTarget(node: ts.Node): boolean {
         let target = climbValue(node);
-        let fresh = false;
         for (;;) {
             const parent = target.parent;
             if ((ts.isPropertyAccessExpression(parent) || ts.isElementAccessExpression(parent)) && parent.expression === target) {
-                const access = climbValue(parent);
-                if (fresh) {
-                    // The first step into a copy is the copy's own slot or method: a write there is not the field's.
-                    fresh = false;
-                    const call = access.parent;
-                    const isCallee = ts.isCallExpression(call) && call.expression === access;
-                    if (isCallee ? this.readCallEffect(access) === "mutates" : isDirectWrite(access)) return false;
-                }
-                target = access;
+                target = climbValue(parent);
             } else if (ts.isCallExpression(parent) && parent.expression === target) {
-                const effect = this.readCallEffect(target);
-                if (effect === "mutates") return true;
-                fresh = effect === "copies";
+                // A result that may be the field's own data (an element, a copy of elements) carries the walk on; a primitive ends it.
+                const effect = this.readCallEffect(target, parent);
+                if (effect !== "passes") return effect === "mutates";
                 target = climbValue(parent);
             } else {
                 if (ts.isBinaryExpression(parent) || ts.isPrefixUnaryExpression(parent) || ts.isPostfixUnaryExpression(parent) || ts.isDeleteExpression(parent)) return isDirectWrite(target);
@@ -900,7 +893,12 @@ function buildVirtualFile(tacet: string, source: string): VirtualFile {
     let propsType = "any";
     if (script !== null) {
         parts.push(script.content);
-        const promoted = descriptor.scriptSetup === null ? promoteScriptToSetup(source, script.loc.start.offset) : undefined;
+        let promoted: string | undefined;
+        try {
+            promoted = descriptor.scriptSetup === null ? promoteScriptToSetup(source, script.loc.start.offset) : undefined;
+        } catch (error) {
+            throw new Error(`${tacet}: ${error instanceof Error ? error.message : String(error)}`);
+        }
         try {
             const setup = promoted === undefined ? descriptor : parseSfc(promoted, {filename: tacet}).descriptor;
             const compiled = compileScript(setup, {id: tacet});
