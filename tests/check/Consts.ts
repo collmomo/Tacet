@@ -124,6 +124,19 @@ slots.x[0]().y = 2;
 const slotsRead = {x: [(): {y: number} => ({y: 1})], n: 1};
 export const slotText = slotsRead.x[0]().y.toString();
 
+const bag = {x: [1], add(): void { this.x.push(2); }};
+bag.add();
+
+interface Sack { x: number[]; add(): void; }
+const sack: Sack = {x: [1], add(): void { this.x.push(2); }};
+sack.add();
+
+const callable = {x: Object.assign((): number => 1, {items: [] as number[], add(n: number): void { this.items.push(n); }})};
+callable.x.add(3);
+
+const bindable = {x: (): number => 1, y: 2};
+export const rebound = bindable.x.bind(null);
+
 const casted = {x: [1]};
 (casted.x.push as (n: number) => number)(2);
 
@@ -173,6 +186,10 @@ export class ConstsView {
     @live public get boundY(): number { return bound.y; }
     @live public get slotsN(): number { return slots.n; }
     @live public get slotsReadN(): number { return slotsRead.n; }
+    @live public get bagX(): number { return bag.x.length; }
+    @live public get sackX(): number { return sack.x.length; }
+    @live public get callableX(): number { return callable.x.items.length; }
+    @live public get bindableY(): number { return bindable.y; }
     @live public get branchedX(): number { return branched.x.length; }
     @live public get indexedX(): number { return indexed.x.length; }
     @live public get elementX(): number { return element.x.length; }

@@ -214,7 +214,24 @@ class Analysis {
     private isPrimitiveType(type: ts.Type): boolean {
         if (type.getFlags() & PRIMITIVE_FLAGS) return true;
         if (type.isUnion()) return type.types.every(part => this.isPrimitiveType(part));
-        return type.isIntersection() && type.types.some(part => this.isPrimitiveType(part));
+        // A brand is an object part whose every property is itself primitive, a phantom; an object part with real data is not.
+        return type.isIntersection() && type.types.some(part => this.isPrimitiveType(part))
+            && type.types.every(part => this.isPrimitiveType(part) || part.getProperties().every(property => this.isPrimitiveType(this.checker.getTypeOfSymbol(property))));
+    }
+
+    /** What one declaration of a callee may do to what holds it. */
+    private readDeclarationEffect(declaration: ts.Declaration, receiver: ts.Node, baseType: ts.Type, name: string): CallEffect {
+        if (!declaration.getSourceFile().isDeclarationFile) {
+            // A method may change what it belongs to through `this`; an arrow held in a property has no `this` of its own.
+            if (ts.isPropertyAssignment(declaration) && ts.isArrowFunction(declaration.initializer)) return "passes";
+            return "mutates";
+        }
+        if (baseType.getCallSignatures().length > 0) {
+            // `f.call(...)` and `f.apply(...)` run the receiver: what it would do, called itself; `bind` and the rest run nothing.
+            return name === "call" || name === "apply" ? this.readCalleeEffect(receiver) : "passes";
+        }
+        if (this.nameContainer(baseType) === undefined) return "mutates";
+        return MUTATORS.has(name) ? "mutates" : "passes";
     }
 
     /** What a callee does to the data it is reached through, by its declaration: on a branched callee, the worst branch. */
@@ -231,8 +248,6 @@ class Analysis {
         const baseType = this.checker.getTypeAtLocation(callee.expression);
         if (this.isPrimitiveType(baseType)) return "ends";
         if (baseType.getFlags() & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) return "mutates";
-        // `f.call(...)`, `f.apply(...)`, `f.bind(...)` run the receiver: what it would do, called itself.
-        if (baseType.getCallSignatures().length > 0) return this.readCalleeEffect(callee.expression);
         let name: string | undefined;
         if (ts.isPropertyAccessExpression(callee)) name = callee.name.text;
         else {
@@ -241,14 +256,10 @@ class Analysis {
             else if (keyType.getFlags() & ts.TypeFlags.NumberLike) return "passes";
             else return "mutates";
         }
-        const declaration = this.findDeclaration(this.checker.getPropertyOfType(baseType.getNonNullableType(), name));
-        if (declaration === undefined) return "mutates";
-        // A method of a class may change what the class holds; a function held in a plain property is only called.
-        if (!declaration.getSourceFile().isDeclarationFile) return isClassMember(declaration) ? "mutates" : "passes";
-        // The primitive parts of a union end the walk on their own; the rest must be a container the build knows.
-        const parts = baseType.isUnion() ? baseType.types.filter(part => !this.isPrimitiveType(part)) : [baseType];
-        if (parts.some(part => this.nameContainer(part) === undefined)) return "mutates";
-        return MUTATORS.has(name) ? "mutates" : "passes";
+        const declarations = this.checker.getPropertyOfType(baseType.getNonNullableType(), name)?.declarations ?? [];
+        if (declarations.length === 0) return "mutates";
+        // A union's property has one declaration per part; the worst decides.
+        return worstEffect(...declarations.map(declaration => this.readDeclarationEffect(declaration, callee.expression, baseType, name)));
     }
 
     /** What a call on the path does: its callee's effect, and when that hands the result on, whether the result can hold the field's data. */
@@ -305,8 +316,9 @@ class Analysis {
     private nameContainer(type: ts.Type): string | undefined {
         const base = type.getNonNullableType();
         if (base.isUnion()) {
+            // The primitive parts hold nothing and end a walk on their own; the rest must all be containers.
             const names: string[] = [];
-            for (const part of base.types) {
+            for (const part of base.types.filter(part => !this.isPrimitiveType(part))) {
                 const name = this.nameContainer(part);
                 if (name === undefined) return undefined;
                 names.push(name);
