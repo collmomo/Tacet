@@ -267,6 +267,24 @@ const escaping = {inner: {x: [1]}};
 const ref = escaping.inner;
 ref.x = [2];
 
+const blocked = {items: [1], get n(): number { if (Math.random() > 2) { return this.items.length; } return 0; }};
+
+const looped2 = {list: [{x: [1]}]};
+for (const entry of looped2.list) entry.x = [2];
+
+const picked = {list: [{x: [1]}]};
+const pick = picked.list.find(() => true);
+if (pick !== undefined) pick.x = [2];
+
+const selfEscaped = {items: [1], get n(): number { return this.items.length; }};
+const itemsRef = selfEscaped.items;
+itemsRef.push(2);
+
+const SPACED = Object
+    .keys({a: 1});
+
+const quoted = {"y": sharedList};
+
 const casted = {x: [1]};
 (casted.x.push as (n: number) => number)(2);
 
@@ -362,6 +380,12 @@ export class ConstsView {
     @live public get selfReadN(): number { return selfRead.n; }
     @live public get snapList(): number { return snap.list.length; }
     @live public get escapingX(): number { return escaping.inner.x.length; }
+    @live public get blockedN(): number { return blocked.n; }
+    @live public get looped2X(): number { return looped2.list[0].x.length; }
+    @live public get pickedX(): number { return picked.list[0].x.length; }
+    @live public get selfEscapedN(): number { return selfEscaped.n; }
+    @live public get spacedCount(): number { return SPACED.length; }
+    @live public get quotedY(): number { return quoted.y.x.length; }
     @live public get branchedX(): number { return branched.x.length; }
     @live public get indexedX(): number { return indexed.x.length; }
     @live public get elementX(): number { return element.x.length; }
