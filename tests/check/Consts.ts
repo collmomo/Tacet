@@ -308,6 +308,20 @@ const iterable = {items: [1], *[Symbol.iterator](): Generator<number> { yield 1;
 const jsonLike: Pick<JSON, "parse"> = {parse: (): unknown => sharedList};
 const parsedLike = jsonLike.parse("") as {x: number[]};
 
+const thisArgged = {items: [1], other: [2], get n(): number { return this.items.map(function (this: {other: number[]}): number { return this.other.length; }, this)[0]; }};
+const otherRef = thisArgged.other;
+otherRef.push(3);
+
+const selfish = {n: 1, get self(): {n: number} { return this; }};
+const selfAlias = selfish.self;
+selfAlias.n = 2;
+
+const called = {items: [1], get n(): number { return (function (this: {items: number[]}): number { return this.items.length; }).call(this); }};
+const calledRef = called.items;
+calledRef.push(2);
+
+const globalKeys = globalThis.Object.keys({a: 1});
+
 const casted = {x: [1]};
 (casted.x.push as (n: number) => number)(2);
 
@@ -416,6 +430,10 @@ export class ConstsView {
     @live public get bumpyN(): number { return bumpy.n; }
     @live public get iterableItems(): number { return iterable.items.length; }
     @live public get parsedLikeX(): number { return parsedLike.x.length; }
+    @live public get thisArggedN(): number { return thisArgged.n; }
+    @live public get selfishN(): number { return selfish.n; }
+    @live public get calledN(): number { return called.n; }
+    @live public get globalKeysCount(): number { return globalKeys.length; }
     @live public get branchedX(): number { return branched.x.length; }
     @live public get indexedX(): number { return indexed.x.length; }
     @live public get elementX(): number { return element.x.length; }
