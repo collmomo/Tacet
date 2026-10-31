@@ -1,4 +1,4 @@
-import {live} from "../../src";
+import {deep, live} from "../../src";
 
 const looped = [{n: 1}];
 const keyed = [{n: 2}];
@@ -254,6 +254,19 @@ const KEYS = Object.keys({a: 1});
 const methodHeld = {m(): number { return 1; }, n: 2};
 export const methodValue = methodHeld.m;
 
+export const sharedList = {x: [1]};
+const sealed = Object.seal(sharedList);
+
+const selfRead = {items: [1], get n(): number { return this.items.length; }};
+
+class DeepHolder { @deep public items = {list: [1]}; }
+const deepHolder = new DeepHolder();
+const snap = deepHolder.items;
+
+const escaping = {inner: {x: [1]}};
+const ref = escaping.inner;
+ref.x = [2];
+
 const casted = {x: [1]};
 (casted.x.push as (n: number) => number)(2);
 
@@ -344,6 +357,11 @@ export class ConstsView {
     @live public get nestedKidsCount(): number { return nestedKids.inner.list.length; }
     @live public get nestedKidsItems(): number { return nestedKids.inner.items.length; }
     @live public get keysCount(): number { return KEYS.length; }
+    @live public get accessedKidsAgain(): number { return accessedKids.inner.length; }
+    @live public get sealedX(): number { return sealed.x.length; }
+    @live public get selfReadN(): number { return selfRead.n; }
+    @live public get snapList(): number { return snap.list.length; }
+    @live public get escapingX(): number { return escaping.inner.x.length; }
     @live public get branchedX(): number { return branched.x.length; }
     @live public get indexedX(): number { return indexed.x.length; }
     @live public get elementX(): number { return element.x.length; }

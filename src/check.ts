@@ -133,6 +133,24 @@ function unwrapValue(node: ts.Node): ts.Node {
     return inner;
 }
 
+interface LiteralInSight {
+    literal: ts.ObjectLiteralExpression;
+    roots: {declaration: ts.VariableDeclaration; nested: boolean}[];
+}
+
+/** The property `name` of a literal, the last one declared; nothing when a later spread may replace it. */
+function findPropertyIn(literal: ts.ObjectLiteralExpression, name: string): ts.ObjectLiteralElementLike | undefined {
+    let found: ts.ObjectLiteralElementLike | undefined;
+    for (const property of literal.properties) {
+        if (ts.isSpreadAssignment(property)) { if (found !== undefined) return undefined; }
+        else if (property.name !== undefined && ts.isIdentifier(property.name) && property.name.text === name) found = property;
+    }
+    return found;
+}
+
+/** The default library's functions whose result is a new container of their own making. */
+const FRESH_LIBRARY_CALLS = new Set(["Object.keys", "Object.values", "Object.entries", "Object.fromEntries", "Object.groupBy", "Array.from", "Array.of", "JSON.parse", "Map.groupBy"]);
+
 /** A `const` declared at the top of a module, under its own name. */
 function isModuleConst(declaration: ts.Node): declaration is ts.VariableDeclaration {
     if (!ts.isVariableDeclaration(declaration) || !ts.isIdentifier(declaration.name)) return false;
@@ -185,6 +203,8 @@ function findEnclosingFunction(node: ts.Node): ts.Node | undefined {
 interface Frame {
     locals: Map<ts.Symbol, Source>;
     thisSource: Source;
+    /** The literal `this` names inside one of its own accessors. */
+    thisLiteral?: ts.ObjectLiteralExpression;
 }
 
 class Analysis {
@@ -201,10 +221,12 @@ class Analysis {
     /** Every module-level const of a file, classified in one walk of the file: written, or never. */
     private readonly writtenConsts = new Map<ts.SourceFile, Map<ts.VariableDeclaration, boolean>>();
     private readonly classifying = new Set<ts.SourceFile>();
+    /** The module consts of each file with a slot that escapes to another holder. */
+    private readonly escapedConsts = new Map<ts.SourceFile, Set<ts.VariableDeclaration>>();
     /** What each module const holds, evaluated once. */
     private readonly constSources = new Map<ts.VariableDeclaration, Source>();
-    /** How many times a cycle was cut so far; an answer shaped by a cut is not kept. */
-    private cuts = 0;
+    /** Every cut of a cycle so far, by what was on the stack; an answer shaped by a cut of anything but itself is not kept. */
+    private readonly cutLog: ts.Node[] = [];
     private current: Set<ts.Declaration> | undefined;
     private template = false;
     /** Above zero while an outer const's initializer is evaluated: it ran once, so its reads are nobody's. */
@@ -295,47 +317,54 @@ class Analysis {
         return initializer !== undefined && ts.isArrowFunction(initializer);
     }
 
-    /** Whether an expression is a call of the default library's own function, whose result is new and nobody else's. */
-    private isDefaultLibraryCall(expression: ts.Expression): boolean {
+    /** Whether an expression is a call of one of the default library's functions that build something new of their own. */
+    private isFreshLibraryCall(expression: ts.Expression): boolean {
         const inner = unwrapValue(expression);
         if (!ts.isCallExpression(inner)) return false;
         const callee = unwrapValue(inner.expression);
-        const symbol = this.checker.getSymbolAtLocation(ts.isPropertyAccessExpression(callee) ? callee.name : callee);
-        const declaration = this.findDeclaration(symbol);
+        if (!ts.isPropertyAccessExpression(callee) || !FRESH_LIBRARY_CALLS.has(callee.getText())) return false;
+        const declaration = this.findDeclaration(this.checker.getSymbolAtLocation(callee.name));
         return declaration !== undefined && this.isDefaultLibrary(declaration.getSourceFile());
     }
 
-    /** The object literal an expression denotes in plain sight: a const's own literal, or a slot of one, through nested literals; nothing when a later spread or a write may have replaced it. */
-    private findLiteralFor(expression: ts.Node): ts.ObjectLiteralExpression | undefined {
+    /** The object literal an expression denotes in plain sight: a const's own literal, or a slot of one through nested literals, with every const it went through. */
+    private findLiteralFor(expression: ts.Node): LiteralInSight | undefined {
         const inner = unwrapValue(expression);
         if (ts.isIdentifier(inner)) {
             const declaration = this.findDeclaration(this.checker.getSymbolAtLocation(inner));
             if (declaration === undefined || !ts.isVariableDeclaration(declaration)) return undefined;
             const literal = findConstInitializer(declaration);
-            // While its file is being classified the literal is trusted: a replacement of a property is a write that classification finds on its own.
-            if (literal === undefined || !ts.isObjectLiteralExpression(literal) || this.isWrittenConst(declaration, true)) return undefined;
-            return literal;
+            return literal !== undefined && ts.isObjectLiteralExpression(literal) ? {literal, roots: [{declaration, nested: false}]} : undefined;
         }
         if (!ts.isPropertyAccessExpression(inner)) return undefined;
-        const slot = this.findLiteralProperty(inner.expression, inner.name.text);
+        const parent = this.findLiteralFor(inner.expression);
+        if (parent === undefined) return undefined;
+        const slot = findPropertyIn(parent.literal, inner.name.text);
         if (slot === undefined) return undefined;
+        const nested = parent.roots.map(root => ({...root, nested: true}));
         if (ts.isPropertyAssignment(slot)) {
             const value = unwrapValue(slot.initializer);
-            return ts.isObjectLiteralExpression(value) ? value : this.findLiteralFor(value);
+            if (ts.isObjectLiteralExpression(value)) return {literal: value, roots: nested};
+            const through = this.findLiteralFor(value);
+            return through === undefined ? undefined : {literal: through.literal, roots: [...nested, ...through.roots]};
         }
-        return ts.isShorthandPropertyAssignment(slot) ? this.findLiteralFor(slot.name) : undefined;
+        if (!ts.isShorthandPropertyAssignment(slot)) return undefined;
+        const through = this.findLiteralFor(slot.name);
+        return through === undefined ? undefined : {literal: through.literal, roots: [...nested, ...through.roots]};
     }
 
-    /** The property `name` of the literal `receiver` denotes, unless a later spread may replace it. */
+    /** A literal is trusted while no const it came through is written, and no slot of one it is nested in escapes to another holder. */
+    private isTrustedLiteral(found: LiteralInSight): boolean {
+        // While a file is being classified its literals are trusted: a replacement is a write that classification finds on its own.
+        return found.roots.every(root => !this.isWrittenConst(root.declaration, true) && (!root.nested || !this.isEscapedConst(root.declaration)));
+    }
+
+    /** The property `name` of the literal `receiver` denotes, when that literal is trusted and no later spread may replace the property. */
     private findLiteralProperty(receiver: ts.Node, name: string): ts.ObjectLiteralElementLike | undefined {
-        const literal = this.findLiteralFor(receiver);
-        if (literal === undefined) return undefined;
-        let found: ts.ObjectLiteralElementLike | undefined;
-        for (const property of literal.properties) {
-            if (ts.isSpreadAssignment(property)) { if (found !== undefined) return undefined; }
-            else if (property.name !== undefined && ts.isIdentifier(property.name) && property.name.text === name) found = property;
-        }
-        return found;
+        const found = this.findLiteralFor(receiver);
+        if (found === undefined) return undefined;
+        const property = findPropertyIn(found.literal, name);
+        return property !== undefined && this.isTrustedLiteral(found) ? property : undefined;
     }
 
     /** What the library's declaration of a callee may do: a container's mutator writes, Object's and Function's own members never, any other library object's may. */
@@ -618,11 +647,12 @@ class Analysis {
             this.reportError(node, `"${node.text}" is a \`let\` that can change, and ${this.nameReader()} would not follow it. Make it a const, or a marked field.`);
             return "leaf";
         }
-        if (declaration.initializer === undefined || this.stack.has(declaration)) { this.cuts++; return "fixed"; }
+        if (declaration.initializer === undefined) return "fixed";
+        if (this.stack.has(declaration)) { this.cutLog.push(declaration); return "fixed"; }
         const module = isModuleConst(declaration);
         const cached = module ? this.constSources.get(declaration) : undefined;
         if (cached !== undefined) return cached;
-        const cutsBefore = this.cuts;
+        const cutsBefore = this.cutLog.length;
         this.stack.add(declaration);
         let source: Source;
         try {
@@ -632,10 +662,9 @@ class Analysis {
         }
         if (module && !this.isWrittenConst(declaration)) {
             // A module const nothing writes keeps a literal fresh, and what the default library built for it; anything else it holds is fixed in place: an alias, a project call's result.
-            if (source === "leaf") source = this.isDefaultLibraryCall(declaration.initializer) ? "fresh" : "fixed";
+            if (source === "leaf") source = this.isFreshLibraryCall(declaration.initializer) ? "fresh" : "fixed";
         } else if (source === "fresh") source = "fixed";
-        // A source shaped by a cut cycle is this evaluation's alone.
-        if (module && this.cuts === cutsBefore) this.constSources.set(declaration, source);
+        if (module && this.isWholeSince(cutsBefore, declaration)) this.constSources.set(declaration, source);
         return source;
     }
 
@@ -667,19 +696,22 @@ class Analysis {
         }
         // A const held in another module const's literal is written when that holder is: the holding itself is no write.
         const holders = new Map<ts.VariableDeclaration, Set<ts.VariableDeclaration>>();
+        const escaped = new Set<ts.VariableDeclaration>();
         const visitNode = (node: ts.Node): void => {
             if (ts.isExportSpecifier(node)) {
                 const target = this.checker.getExportSpecifierLocalTargetSymbol(node)?.valueDeclaration;
                 if (target !== undefined && ts.isVariableDeclaration(target) && written.has(target)) written.set(target, true);
             } else if (ts.isIdentifier(node)) {
                 const target = this.findReferencedDeclaration(node);
-                if (target !== undefined && ts.isVariableDeclaration(target) && written.has(target) && target.name !== node && !this.isPlainRead(node)) {
-                    const holder = findHoldingConst(node);
-                    if (holder !== undefined && written.has(holder) && holder !== target) {
-                        let held = holders.get(target);
-                        if (held === undefined) holders.set(target, held = new Set());
-                        held.add(holder);
-                    } else written.set(target, true);
+                if (target !== undefined && ts.isVariableDeclaration(target) && written.has(target) && target.name !== node) {
+                    if (!this.isPlainRead(node)) {
+                        const holder = findHoldingConst(node);
+                        if (holder !== undefined && written.has(holder) && holder !== target) {
+                            let held = holders.get(target);
+                            if (held === undefined) holders.set(target, held = new Set());
+                            held.add(holder);
+                        } else written.set(target, true);
+                    } else if (this.isEscapingRead(node)) escaped.add(target);
                 }
             } else ts.forEachChild(node, visitNode);
         };
@@ -690,7 +722,29 @@ class Analysis {
                 if (written.get(held) !== true && [...by].some(holder => written.get(holder) === true)) { written.set(held, true); changed = true; }
             }
         }
+        this.escapedConsts.set(file, escaped);
         return written;
+    }
+
+    /** Whether a read into a const's slots ends somewhere other than a read in place: another holder may then write the slot. */
+    private isEscapingRead(reference: ts.Node): boolean {
+        let chain = climbValue(reference);
+        let depth = 0;
+        while ((ts.isPropertyAccessExpression(chain.parent) || ts.isElementAccessExpression(chain.parent)) && chain.parent.expression === chain) {
+            chain = climbValue(chain.parent);
+            depth++;
+        }
+        // Only an object leaves: a primitive read off the chain holds nothing of the const's.
+        return depth > 0 && !this.isPlainRead(chain) && !this.isPrimitiveType(this.checker.getTypeAtLocation(chain));
+    }
+
+    /** Whether a slot of the const may be held elsewhere, found by the classification of its file. */
+    private isEscapedConst(declaration: ts.VariableDeclaration): boolean {
+        const file = declaration.getSourceFile();
+        // While the file is being classified its literals are trusted: an escape only matters to a read, never to the classification.
+        if (this.classifying.has(file)) return false;
+        this.isWrittenConst(declaration);
+        return this.escapedConsts.get(file)?.has(declaration) ?? true;
     }
 
     private findReferencedDeclaration(node: ts.Identifier): ts.Declaration | undefined {
@@ -705,22 +759,34 @@ class Analysis {
         if (baseSource === "leaf") return "leaf";
         const baseType = this.checker.getTypeAtLocation(base);
         if (this.isLeafType(baseType)) return "leaf";
-        if (baseSource === "fresh") {
-            // A const's literal says what each property holds: its own literal is fresh, an alias of something else keeps that thing's source.
-            const slot = this.findLiteralProperty(base, name);
-            const held = slot === undefined ? undefined : this.readLiteralSlot(slot, frame);
+        if (baseSource === "fresh" || (base.kind === ts.SyntaxKind.ThisKeyword && frame.thisLiteral !== undefined)) {
+            const held = this.readThroughLiteral(base, name, frame);
             if (held !== undefined) return held;
         }
         const property = ts.isPropertyAccessExpression(node) ? this.checker.getSymbolAtLocation(node.name) : this.checker.getPropertyOfType(baseType.getNonNullableType(), name);
         return this.readMember(node, base, baseSource, baseType, name, property);
     }
 
+    /** A const's literal says what each property holds: its own literal is fresh, unless a slot of the const escaped to another holder; an alias keeps that thing's source. */
+    private readThroughLiteral(base: ts.Expression, name: string, frame: Frame): Source | undefined {
+        if (base.kind === ts.SyntaxKind.ThisKeyword && frame.thisLiteral !== undefined) {
+            const slot = findPropertyIn(frame.thisLiteral, name);
+            return slot === undefined ? undefined : this.readLiteralSlot(slot, frame);
+        }
+        const found = this.findLiteralFor(base);
+        if (found === undefined) return undefined;
+        const slot = findPropertyIn(found.literal, name);
+        if (slot === undefined || !found.roots.every(root => !this.isWrittenConst(root.declaration, true))) return undefined;
+        const held = this.readLiteralSlot(slot, frame);
+        return held === "fresh" && found.roots.some(root => this.isEscapedConst(root.declaration)) ? "fixed" : held;
+    }
+
     /** What a property of a const's literal holds, evaluated muted: it was built once. */
     private readLiteralSlot(slot: ts.ObjectLiteralElementLike, frame: Frame): Source | undefined {
         if (ts.isPropertyAssignment(slot)) return this.evaluateMuted(slot.initializer, frame);
         if (ts.isShorthandPropertyAssignment(slot)) return this.evaluateMuted(slot.name, frame, this.checker.getShorthandAssignmentValueSymbol(slot));
-        // An accessor runs on every read, like a getter of a class; a method is a function value.
-        if (ts.isGetAccessorDeclaration(slot) && slot.body !== undefined) return this.followBody(slot, slot.body, [], {locals: new Map(), thisSource: "fixed"});
+        // An accessor runs on every read, like a getter of a class, and `this` inside it is the literal; a method is a function value.
+        if (ts.isGetAccessorDeclaration(slot) && ts.isObjectLiteralExpression(slot.parent)) return this.evaluateGetter(slot, slot.parent);
         return ts.isMethodDeclaration(slot) ? "fixed" : undefined;
     }
 
@@ -736,7 +802,7 @@ class Analysis {
         }
         // A value the check could not follow stays fixed, its reads judged where they happen; a literal's slots are judged one by one; a marked value read once is a snapshot.
         if (this.mutedErrors > troubled && source !== "fresh") return "fixed";
-        return source === "tracked" ? "fixed" : source;
+        return source === "tracked" || source === "deep" ? "fixed" : source;
     }
 
     private readMember(node: ts.Node, base: ts.Expression, baseSource: Source, baseType: ts.Type, name: string, property: ts.Symbol | undefined): Source {
@@ -899,7 +965,7 @@ class Analysis {
 
     /** Follows a body with its parameters bound; returns what it returns. */
     private followBody(key: ts.Node, body: ts.ConciseBody, sources: Source[], outer: Frame, parameters: readonly ts.ParameterDeclaration[] = []): Source {
-        if (this.stack.has(key)) { this.cuts++; return "fixed"; }
+        if (this.stack.has(key)) { this.cutLog.push(key); return "fixed"; }
         this.stack.add(key);
         const frame: Frame = {locals: new Map(outer.locals), thisSource: outer.thisSource};
         parameters.forEach((parameter, index) => {
@@ -1028,10 +1094,12 @@ class Analysis {
     }
 
     /** Checks a live getter once; returns what it returns. */
-    public evaluateGetter(getter: ts.GetAccessorDeclaration): Source {
+    public evaluateGetter(getter: ts.GetAccessorDeclaration, thisLiteral?: ts.ObjectLiteralExpression): Source {
         const known = this.getterResults.get(getter);
         if (known !== undefined) return known;
-        if (getter.body === undefined || this.stack.has(getter)) { this.cuts++; return "fixed"; }
+        if (getter.body === undefined) return "fixed";
+        if (this.stack.has(getter)) { this.cutLog.push(getter); return "fixed"; }
+        const cutsBefore = this.cutLog.length;
         // A getter reached through an outer const's initializer is still checked aloud: its reads are its own.
         const outer = {template: this.template, current: this.current, muted: this.muted, mutedErrors: this.mutedErrors};
         this.template = false;
@@ -1041,7 +1109,7 @@ class Analysis {
         this.getterReads.set(getter, this.current);
         const returns: Source[] = [];
         try {
-            this.checkStatements(getter.body.statements, {locals: new Map(), thisSource: "fixed"}, returns);
+            this.checkStatements(getter.body.statements, {locals: new Map(), thisSource: "fixed", thisLiteral}, returns);
         } finally {
             this.stack.delete(getter);
             this.template = outer.template;
@@ -1050,8 +1118,13 @@ class Analysis {
             this.mutedErrors = outer.mutedErrors;
         }
         const result = returns.length === 0 ? "leaf" : returns.reduce(mergeSources);
-        this.getterResults.set(getter, result);
+        if (this.isWholeSince(cutsBefore, getter)) this.getterResults.set(getter, result);
         return result;
+    }
+
+    /** Whether every cut since `mark` was of `own` itself: its answer is then whole, shaped by no other cycle. */
+    private isWholeSince(mark: number, own: ts.Node): boolean {
+        return this.cutLog.slice(mark).every(key => key === own);
     }
 
     /** Everything the templates read, through the live getters they read. */
