@@ -245,6 +245,15 @@ const holdsCount = {inner: count};
 
 const accessed2 = {get inner(): {items: number[]} { return {items: [1]}; }};
 
+const accessedKids = {get inner(): HTMLCollection { return document.body.children; }};
+
+const nestedKids = {inner: {list: document.body.children, items: [1]}};
+
+const KEYS = Object.keys({a: 1});
+
+const methodHeld = {m(): number { return 1; }, n: 2};
+export const methodValue = methodHeld.m;
+
 const casted = {x: [1]};
 (casted.x.push as (n: number) => number)(2);
 
@@ -331,6 +340,10 @@ export class ConstsView {
     @live public get destructuredX(): number { return destructured.x.length; }
     @live public get holdsCountItems(): number { return holdsCount.inner.items.length; }
     @live public get accessed2Items(): number { return accessed2.inner.items.length; }
+    @live public get accessedKidsCount(): number { return accessedKids.inner.length; }
+    @live public get nestedKidsCount(): number { return nestedKids.inner.list.length; }
+    @live public get nestedKidsItems(): number { return nestedKids.inner.items.length; }
+    @live public get keysCount(): number { return KEYS.length; }
     @live public get branchedX(): number { return branched.x.length; }
     @live public get indexedX(): number { return indexed.x.length; }
     @live public get elementX(): number { return element.x.length; }
