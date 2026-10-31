@@ -145,7 +145,7 @@ function frameFor(fn: ts.SignatureDeclaration, frame: Frame, thisArg?: {source: 
     return {locals: frame.locals, thisSource: thisArg?.source ?? "leaf", thisLiteral: thisArg?.literal};
 }
 
-/** Whether a body uses `this` itself as a value, not only to read a slot: such code may hand the whole object out. Nested functions have their own `this`. */
+/** Whether a body uses `this` itself as a value, or calls a method on it, which hands it on: such code may hand the whole object out. A nested function, method, accessor or class has its own `this`. */
 function usesThisAsValue(body: ts.Node): boolean {
     let found = false;
     const visit = (node: ts.Node): void => {
@@ -153,18 +153,19 @@ function usesThisAsValue(body: ts.Node): boolean {
         if (node.kind === ts.SyntaxKind.ThisKeyword) {
             const parent = node.parent;
             const readsSlot = (ts.isPropertyAccessExpression(parent) || ts.isElementAccessExpression(parent)) && parent.expression === node;
-            if (!readsSlot) found = true;
+            const calledOn = readsSlot && ts.isCallExpression(climbValue(parent).parent) && (climbValue(parent).parent as ts.CallExpression).expression === climbValue(parent);
+            if (!readsSlot || calledOn) found = true;
             return;
         }
-        if (ts.isFunctionDeclaration(node) || ts.isFunctionExpression(node) || ts.isClassLike(node)) return;
+        if (ts.isFunctionDeclaration(node) || ts.isFunctionExpression(node) || ts.isClassLike(node) || ts.isMethodDeclaration(node) || ts.isAccessor(node)) return;
         ts.forEachChild(node, visit);
     };
     visit(body);
     return found;
 }
 
-/** The library calls that take a `thisArg` right after their callback. */
-const LIBRARY_THIS_ARG_CALLS = new Set(["Array.from"]);
+/** The library calls that take a `thisArg` right after their callback, by the interface that declares them. */
+const LIBRARY_THIS_ARG_CALLS = new Map<string, Set<string>>([["ArrayConstructor", new Set(["from"])]]);
 
 /** The array methods that take a `thisArg` right after their callback. */
 const THIS_ARG_METHODS = new Set(["forEach", "map", "filter", "find", "findIndex", "findLast", "findLastIndex", "some", "every", "flatMap"]);
@@ -197,7 +198,6 @@ function climbToModuleConst(node: ts.Node): {declaration: ts.VariableDeclaration
     const declaration = current.parent;
     return isModuleConst(declaration) && declaration.initializer === current ? {declaration, nested} : undefined;
 }
-
 
 /** The initializer of a `const`, unwrapped, or nothing for anything else. */
 function findConstInitializer(declaration: ts.Declaration | undefined): ts.Node | undefined {
@@ -254,6 +254,8 @@ class Analysis {
     private readonly tainted = new Set<ts.Node>();
     private readonly reported = new Set<string>();
     private readonly keyNames = new Map<ts.ComputedPropertyName, string | null | undefined>();
+    private readonly thisUses = new Map<ts.Node, boolean>();
+    private readonly literalsInSight = new Map<ts.Node, LiteralInSight | undefined>();
     /** The call effects of the file being classified, kept for that one walk. */
     private callEffects: Map<ts.CallExpression, CallEffect> | undefined;
     private readonly getterResults = new Map<ts.GetAccessorDeclaration, Source>();
@@ -362,15 +364,18 @@ class Analysis {
     /** Whether an expression is a call of one of the default library's functions that build something new of their own. */
     private isFreshLibraryCall(expression: ts.Expression): boolean {
         const inner = unwrapValue(expression);
-        if (!ts.isCallExpression(inner)) return false;
-        const callee = unwrapValue(inner.expression);
-        const name = ts.isPropertyAccessExpression(callee) ? callee.name : ts.isElementAccessExpression(callee) && ts.isStringLiteralLike(callee.argumentExpression) ? callee.argumentExpression : undefined;
+        return ts.isCallExpression(inner) && this.isLibraryMember(inner.expression, FRESH_LIBRARY_CALLS);
+    }
+
+    /** Whether a callee is one of the listed members of the default library, reached through a library global, whatever its spelling. */
+    private isLibraryMember(callee: ts.Expression, members: Map<string, Set<string>>): boolean {
+        const inner = unwrapValue(callee);
+        const name = ts.isPropertyAccessExpression(inner) ? inner.name : ts.isElementAccessExpression(inner) && ts.isStringLiteralLike(inner.argumentExpression) ? inner.argumentExpression : undefined;
         if (name === undefined) return false;
         const declaration = this.findDeclaration(this.checker.getSymbolAtLocation(name));
         if (declaration === undefined || !this.isDefaultLibrary(declaration.getSourceFile()) || !ts.isInterfaceDeclaration(declaration.parent)) return false;
-        // The receiver must be the library's own global, not a project object typed like it.
-        if (!this.isLibraryGlobalPath(unwrapValue((callee as ts.PropertyAccessExpression | ts.ElementAccessExpression).expression))) return false;
-        return FRESH_LIBRARY_CALLS.get(declaration.parent.name.text)?.has(name.text) ?? false;
+        if (!(members.get(declaration.parent.name.text)?.has(name.text) ?? false)) return false;
+        return this.isLibraryGlobalPath((inner as ts.PropertyAccessExpression | ts.ElementAccessExpression).expression);
     }
 
     /** Whether an expression is a library global, `Object`, or a path of them from one, `globalThis.Object`: every step the default library's own. */
@@ -388,6 +393,14 @@ class Analysis {
 
     /** The object literal an expression denotes in plain sight: a const's own literal, or a slot of one through nested literals, with every const it went through. */
     private findLiteralFor(expression: ts.Node): LiteralInSight | undefined {
+        // Pure for a given program: what a name or a path denotes in plain sight does not change while the check runs.
+        if (this.literalsInSight.has(expression)) return this.literalsInSight.get(expression);
+        const found = this.findLiteralForOnce(expression);
+        this.literalsInSight.set(expression, found);
+        return found;
+    }
+
+    private findLiteralForOnce(expression: ts.Node): LiteralInSight | undefined {
         const inner = unwrapValue(expression);
         if (ts.isIdentifier(inner)) {
             const declaration = this.findDeclaration(this.checker.getSymbolAtLocation(inner));
@@ -857,31 +870,48 @@ class Analysis {
         const step = chain.parent;
         if (!(ts.isPropertyAccessExpression(step) || ts.isElementAccessExpression(step)) || step.expression !== chain) return false;
         const literal = findConstInitializer(declaration);
-        if (literal === undefined || !ts.isObjectLiteralExpression(literal)) return false;
+        if (literal === undefined || !ts.isObjectLiteralExpression(literal)) return true;
         const name = ts.isPropertyAccessExpression(step) ? step.name.text : ts.isStringLiteralLike(step.argumentExpression) || ts.isNumericLiteral(step.argumentExpression) ? step.argumentExpression.text : undefined;
+        let declared = false;
+        let spread = false;
         // Every property that may be the one read is judged; a spread copies data, never code of this literal.
         for (const property of literal.properties) {
-            if (ts.isSpreadAssignment(property)) continue;
+            if (ts.isSpreadAssignment(property)) { spread = true; continue; }
             const key = this.readKeyName(property.name);
+            // A `__proto__` slot sets the prototype, whose code is out of sight.
+            if (key === "__proto__" && ts.isPropertyAssignment(property)) return true;
             if (name !== undefined && key !== undefined && key !== name) continue;
-            if (key === null) continue;
-            const body = this.findOwnCodeBody(property);
-            if (body !== undefined && usesThisAsValue(body)) return true;
+            if (name !== undefined && key === null) continue;
+            if (key === name) declared = true;
+            if (this.mayHandOutThis(property)) return true;
         }
-        return false;
+        // A name the literal does not declare is found on its prototype, `valueOf` among them, which hands out `this`; unless a spread may have copied it in as data.
+        return name === undefined || (!declared && !spread);
     }
 
-    /** The body of a literal's property when it is code with a `this` of its own: an accessor, a method, a `function` held in or named by the slot. */
-    private findOwnCodeBody(property: ts.ObjectLiteralElementLike): ts.Node | undefined {
-        if (ts.isGetAccessorDeclaration(property) || ts.isMethodDeclaration(property)) return property.body;
+    /** Whether a literal's property is code that may return or hand on `this`: what the check cannot see into counts as such. */
+    private mayHandOutThis(property: ts.ObjectLiteralElementLike): boolean {
+        if (ts.isGetAccessorDeclaration(property) || ts.isMethodDeclaration(property)) return property.body === undefined || this.usesThisAsValue(property.body);
+        if (ts.isSetAccessorDeclaration(property)) return false;
         const value = ts.isPropertyAssignment(property) ? unwrapValue(property.initializer) : ts.isShorthandPropertyAssignment(property) ? property.name : undefined;
-        if (value === undefined) return undefined;
-        if (ts.isFunctionExpression(value)) return value.body;
-        if (!ts.isIdentifier(value)) return undefined;
+        if (value === undefined) return true;
+        const type = this.checker.getTypeAtLocation(value);
+        // Data holds no code of its own; an arrow has no `this` of its own.
+        if (type.getCallSignatures().length === 0 || ts.isArrowFunction(value)) return false;
+        if (ts.isFunctionExpression(value)) return this.usesThisAsValue(value.body);
+        if (!ts.isIdentifier(value)) return true;
         const declaration = this.findDeclaration(ts.isShorthandPropertyAssignment(property) ? this.checker.getShorthandAssignmentValueSymbol(property) : this.checker.getSymbolAtLocation(value));
-        if (declaration !== undefined && ts.isFunctionDeclaration(declaration)) return declaration.body;
+        if (declaration !== undefined && ts.isFunctionDeclaration(declaration)) return declaration.body === undefined || this.usesThisAsValue(declaration.body);
         const initializer = findConstInitializer(declaration);
-        return initializer !== undefined && ts.isFunctionExpression(initializer) ? initializer.body : undefined;
+        if (initializer !== undefined && ts.isArrowFunction(initializer)) return false;
+        return initializer === undefined || !ts.isFunctionExpression(initializer) || this.usesThisAsValue(initializer.body);
+    }
+
+    /** Whether a body uses `this` itself as a value, or calls a method on it: such code may hand the whole object out. Cached per body. */
+    private usesThisAsValue(body: ts.Node): boolean {
+        let known = this.thisUses.get(body);
+        if (known === undefined) this.thisUses.set(body, known = usesThisAsValue(body));
+        return known;
     }
 
     /** Whether a slot of the const may be held elsewhere, found by the classification of its file. */
@@ -1030,7 +1060,7 @@ class Analysis {
             }
             const declaration = this.findDeclaration(this.checker.getSymbolAtLocation(callee));
             if (declaration === undefined || declaration.getSourceFile().isDeclarationFile) return this.evaluateLibraryCall(node, frame);
-            const sources = this.evaluateArguments(node, frame);
+            const sources = this.evaluateArgumentList(node.arguments, frame);
             if (ts.isFunctionDeclaration(declaration) && declaration.body !== undefined) return this.followBody(declaration, declaration.body, sources, this.buildCalleeFrame(declaration, declaration, frame), declaration.parameters);
             if (ts.isVariableDeclaration(declaration) && declaration.initializer !== undefined && isFunctionLike(declaration.initializer)) {
                 const fn = declaration.initializer;
@@ -1040,7 +1070,7 @@ class Analysis {
             return "leaf";
         }
         const direct = unwrapValue(callee);
-        if (isFunctionLike(direct)) return this.followBody(direct, direct.body, this.evaluateArguments(node, frame), frameFor(direct, frame), direct.parameters);
+        if (isFunctionLike(direct)) return this.followBody(direct, direct.body, this.evaluateArgumentList(node.arguments, frame), frameFor(direct, frame), direct.parameters);
         // `(function () {...}).call(x, ...)` and `.apply(x, [...])` run the function with `x` as its `this`.
         if (ts.isPropertyAccessExpression(direct) && (direct.name.text === "call" || direct.name.text === "apply") && isFunctionLike(unwrapValue(direct.expression))) {
             const fn = unwrapValue(direct.expression) as ts.ArrowFunction | ts.FunctionExpression;
@@ -1073,7 +1103,7 @@ class Analysis {
                 if ((property.declarations ?? []).some(isObjectMember)) this.checkLibraryRead(callee, `${this.readText(callee)}()`, baseSource, baseType);
                 return this.evaluateLibraryCall(node, frame);
             }
-            const sources = this.evaluateArguments(node, frame);
+            const sources = this.evaluateArgumentList(node.arguments, frame);
             if (isClassMember(declaration)) {
                 if (ts.isMethodDeclaration(declaration) && declaration.body !== undefined) {
                     return this.followBody(declaration, declaration.body, sources, {locals: new Map(), thisSource: "fixed"}, declaration.parameters);
@@ -1090,7 +1120,7 @@ class Analysis {
             return "leaf";
         }
         this.evaluateExpression(callee, frame);
-        this.evaluateArguments(node, frame);
+        this.evaluateArgumentList(node.arguments, frame);
         this.reportError(node, `"${this.readText(callee)}()": a call the build cannot see through.`);
         return "leaf";
     }
@@ -1100,10 +1130,6 @@ class Analysis {
         const enclosing = findEnclosingFunction(declaration);
         if (enclosing === undefined || !this.stack.has(enclosing)) return {locals: new Map(), thisSource: "leaf"};
         return frameFor(fn, caller);
-    }
-
-    private evaluateArguments(node: ts.CallExpression, frame: Frame): Source[] {
-        return this.evaluateArgumentList(node.arguments, frame);
     }
 
     private evaluateArgumentList(argumentList: readonly ts.Expression[], frame: Frame): Source[] {
@@ -1120,10 +1146,10 @@ class Analysis {
 
     /** A call into a library: a leaf, its arguments read, its callbacks followed with nothing bound, a walker's argument read whole. */
     private evaluateLibraryCall(node: ts.CallExpression, frame: Frame): Source {
-        const sources = this.evaluateArguments(node, frame);
+        const sources = this.evaluateArgumentList(node.arguments, frame);
         const name = this.readText(node.expression);
         // `Array.from(items, fn, thisArg)` runs fn with thisArg as its `this`, already evaluated with the other arguments.
-        const takesThisArg = LIBRARY_THIS_ARG_CALLS.has(name);
+        const takesThisArg = this.isLibraryMember(node.expression, LIBRARY_THIS_ARG_CALLS);
         node.arguments.forEach((argument, index) => {
             if (!isFunctionLike(argument)) return;
             const thisArg = takesThisArg ? node.arguments[index + 1] : undefined;
@@ -1142,9 +1168,10 @@ class Analysis {
         }
         const element = ok ? this.readElementSource(base, baseSource) : "leaf";
         const slots = CALLBACK_ELEMENTS[name] ?? [];
-        const thisArgIndex = THIS_ARG_METHODS.has(name) ? node.arguments.findIndex(isFunctionLike) + 1 : -1;
-        const thisArg = thisArgIndex > 0 ? node.arguments[thisArgIndex] : undefined;
-        const thisArgSource = thisArg === undefined ? undefined : this.evaluateExpression(thisArg, frame);
+        const callbackIndex = THIS_ARG_METHODS.has(name) ? node.arguments.findIndex(isFunctionLike) : -1;
+        const thisArgIndex = callbackIndex < 0 ? -1 : callbackIndex + 1;
+        const thisArg = thisArgIndex < 0 ? undefined : node.arguments[thisArgIndex];
+        const thisArgSource = thisArg === undefined ? undefined : this.evaluateHandedOn(thisArg, frame);
         node.arguments.forEach((argument, index) => {
             if (index === thisArgIndex) return;
             if (!isFunctionLike(argument)) { this.evaluateExpression(argument, frame); return; }

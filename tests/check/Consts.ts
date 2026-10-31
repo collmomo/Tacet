@@ -339,6 +339,26 @@ made.push(3);
 
 function handOver(): {list: number[]} { return holder2; }
 
+const handlerHolder = {fn: (n: number): number => n};
+handlerHolder.fn = (n: number): number => n + 1;
+
+const valued = {n: 1};
+const valuedSelf = valued.valueOf();
+valuedSelf.n = 2;
+
+const delegating = {n: 1, me(): {n: number} { return this; }, get self(): {n: number} { return this.me(); }};
+const delegated = delegating.self;
+delegated.n = 2;
+
+const symbolKey = Symbol("k");
+const symbolic = {n: 1, get [symbolKey](): {n: number} { return this; }};
+const symbolicSelf = symbolic[symbolKey];
+symbolicSelf.n = 2;
+
+const wrapping = {n: 1, get wrap(): {toString(): string} { return {toString(): string { return String(this); }}; }};
+const wrapped = wrapping.wrap;
+export const wrappedText = wrapped.toString();
+
 const casted = {x: [1]};
 (casted.x.push as (n: number) => number)(2);
 
@@ -458,6 +478,12 @@ export class ConstsView {
     @live public get fakeKeysCount(): number { return fakeKeys.length; }
     @live public get listMakerN(): number { return listMaker.n; }
     @live public get holder2Returned(): number { return handOver().list.length; }
+    @live public get handlerByName(): number { return [0].map(handlerHolder.fn)[0]; }
+    @live public get valuedN(): number { return valued.n; }
+    @live public get delegatingN(): number { return delegating.n; }
+    @live public get symbolicN(): number { return symbolic.n; }
+    @live public get wrappingN(): number { return wrapping.n; }
+    @live public get holder2GlobalFrom(): number { return globalThis.Array.from([0], function (this: {list: number[]}): number { return this.list.length; }, holder2)[0]; }
     @live public get branchedX(): number { return branched.x.length; }
     @live public get indexedX(): number { return indexed.x.length; }
     @live public get elementX(): number { return element.x.length; }
