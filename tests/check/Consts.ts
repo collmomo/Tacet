@@ -285,6 +285,29 @@ const SPACED = Object
 
 const quoted = {"y": sharedList};
 
+const mapped2 = {items: [1], other: [2], get n(): number { return this.items.map(() => this.other.length)[0]; }};
+
+const keyedLoop = {inner: {a: 1}, other: {x: [1]}};
+for (const key in keyedLoop.inner) sums.push(key.length);
+
+const numbered = {nums: [1, 2], other: {x: [1]}};
+for (const n of numbered.nums) sums.push(n);
+
+interface Shape { items: number[]; n: number; }
+const satisfiedSelf = {items: [1], get n(): number { return this.items.length; }} satisfies Shape;
+const satisfiedRef = satisfiedSelf.items;
+satisfiedRef.push(2);
+
+interface Bumpy { bump: () => number; inner: {x: number[]}; n: number; }
+const bumpy: Bumpy = {bump: (): number => 0, inner: {x: [1]}, n: 1};
+const bumpyRef = bumpy.inner;
+export const bumped = bumpy.bump() + bumpyRef.x.length;
+
+const iterable = {items: [1], *[Symbol.iterator](): Generator<number> { yield 1; }};
+
+const jsonLike: Pick<JSON, "parse"> = {parse: (): unknown => sharedList};
+const parsedLike = jsonLike.parse("") as {x: number[]};
+
 const casted = {x: [1]};
 (casted.x.push as (n: number) => number)(2);
 
@@ -386,6 +409,13 @@ export class ConstsView {
     @live public get selfEscapedN(): number { return selfEscaped.n; }
     @live public get spacedCount(): number { return SPACED.length; }
     @live public get quotedY(): number { return quoted.y.x.length; }
+    @live public get mapped2N(): number { return mapped2.n; }
+    @live public get keyedLoopX(): number { return keyedLoop.other.x.length; }
+    @live public get numberedX(): number { return numbered.other.x.length; }
+    @live public get satisfiedSelfN(): number { return satisfiedSelf.n; }
+    @live public get bumpyN(): number { return bumpy.n; }
+    @live public get iterableItems(): number { return iterable.items.length; }
+    @live public get parsedLikeX(): number { return parsedLike.x.length; }
     @live public get branchedX(): number { return branched.x.length; }
     @live public get indexedX(): number { return indexed.x.length; }
     @live public get elementX(): number { return element.x.length; }
