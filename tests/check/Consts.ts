@@ -322,6 +322,23 @@ calledRef.push(2);
 
 const globalKeys = globalThis.Object.keys({a: 1});
 
+const holder2 = {list: [1]};
+const holder2Ref = holder2.list;
+holder2Ref.push(2);
+
+const selfKeyed = {n: 1, get self(): {n: number} { return this; }};
+const selfKeyedAlias = selfKeyed["self"];
+selfKeyedAlias.n = 2;
+
+const fakeGlobal: Pick<typeof globalThis, "Object"> = {Object: Object};
+const fakeKeys = fakeGlobal.Object.keys({a: 1});
+
+const listMaker = {n: 1, get list(): number[] { return [1, 2]; }};
+const made = listMaker.list;
+made.push(3);
+
+function handOver(): {list: number[]} { return holder2; }
+
 const casted = {x: [1]};
 (casted.x.push as (n: number) => number)(2);
 
@@ -434,6 +451,13 @@ export class ConstsView {
     @live public get selfishN(): number { return selfish.n; }
     @live public get calledN(): number { return called.n; }
     @live public get globalKeysCount(): number { return globalKeys.length; }
+    @live public get holder2Mapped(): number { return [0].map(function (this: {list: number[]}): number { return this.list.length; }, holder2)[0]; }
+    @live public get holder2Applied(): number { return (function (a: {list: number[]}): number { return a.list.length; }).apply(null, [holder2]); }
+    @live public get holder2From(): number { return Array.from([0], function (this: {list: number[]}): number { return this.list.length; }, holder2)[0]; }
+    @live public get selfKeyedN(): number { return selfKeyed.n; }
+    @live public get fakeKeysCount(): number { return fakeKeys.length; }
+    @live public get listMakerN(): number { return listMaker.n; }
+    @live public get holder2Returned(): number { return handOver().list.length; }
     @live public get branchedX(): number { return branched.x.length; }
     @live public get indexedX(): number { return indexed.x.length; }
     @live public get elementX(): number { return element.x.length; }
