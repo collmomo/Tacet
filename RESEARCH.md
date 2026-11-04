@@ -26,10 +26,10 @@ The "walks the layout" rows are a sequential run, nothing else on the box; the e
 | plain field | 1 to 3 ns (noisy) | 0.01 µs |
 | `@live` decorator (getter on the instance) | 9 ns | 0.5 to 0.8 µs |
 | `/** @live */` tag (the same getter) | 9.0 to 9.1 ns | 0.53 to 0.59 µs |
-| `@live accessor` (getter on the prototype; removed since, Open 11) | 16 ns | 0.35 µs |
+| `@live accessor` (getter on the prototype; removed since, Open 10) | 16 ns | 0.35 µs |
 | a Vue `shallowRef` alone | | 0.02 µs |
 
-So the ref is not the cost of an instance; `Object.defineProperty` on the instance is, and esbuild's decorator helpers add a little on top of the tag. The `accessor` form saves less than hoped here (0.35 µs against 0.5), reads a little slower through the two-step getter, and is not seen by `JSON.stringify` or `Object.keys`. It was removed from the runtime pending the owner's decision (DECISIONS.md, Open 11); the field form is what ships.
+So the ref is not the cost of an instance; `Object.defineProperty` on the instance is, and esbuild's decorator helpers add a little on top of the tag. The `accessor` form saves less than hoped here (0.35 µs against 0.5), reads a little slower through the two-step getter, and is not seen by `JSON.stringify` or `Object.keys`. It was removed from the runtime pending the owner's decision (DECISIONS.md, Open 10); the field form is what ships.
 
 **A `@deep` array of a million rows** (`bench/`): `find` of the first row wraps one item, 121 ms to make and assign the million rows and 0.07 ms for the find; `find` of the last row wraps all million in 2.4 s, about 2.4 µs a wrap.
 

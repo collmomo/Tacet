@@ -277,6 +277,8 @@ views/TodoView.ts:21:16 error: "this.manager.count": "count" is a plain field of
 and the getter would not follow it. Mark it @live or @deep, or make it readonly.
 ```
 
+A `const` has no mark, so the check reads it as it is: a getter or a template may read one freely, and a const that changes does not redraw the screen, like any unmarked data. A class instance held in a const is still judged by its own marks.
+
 A `vite build` with an error fails. In `vite dev` the error is logged on every change. A marked field no template reads is a hint, not an error. The templates are checked against the same marks, and a template that writes a field (`v-model`, `view.x = 1` in a handler) is refused: a change goes through a method.
 
 The check reads the project's `tsconfig.json`, so what it covers is what the tsconfig includes. Type-checking the templates themselves is `vue-tsc`, with one tsconfig line, `"vueCompilerOptions": {"extensions": [".vue", ".tacet"]}`, and the editor needs one setting, `"files.associations": {"*.tacet": "vue"}`.
